@@ -1,7 +1,6 @@
 from __future__ import annotations
-from typing import Generator, Pattern, TypeVar, Tuple, Generic, Optional, Callable, Union, List, Dict, Set, Any
-from functools import reduce
-import re
+from typing import (Generator, TypeVar, Tuple, Generic, Optional, Callable,
+                    Union, List, Any)
 
 T = TypeVar('T')
 S = TypeVar('S')
@@ -13,26 +12,31 @@ Gen = Generator[T, None, None]
 ###############################################################################
 
 indent = 0
-def loud(f):
-    def wrapper(*args, **kwargs):
+
+
+def loud(f : Callable[..., T]) -> Callable[..., T]:
+    def wrapper(*args : Any, **kwargs : Any) -> T:
         global indent
-        res = None
         print(' ' * indent + f.__name__, *args, **kwargs)
+        res = None
         try:
             indent += 4
             res = f(*args, **kwargs)
+            return res
         finally:
             indent -= 4
             print(' ' * indent + str(res))
-        return res
 
     return wrapper
+
 ###############################################################################
 # ParsingState
 ###############################################################################
 
+
 class ParsingError(BaseException):
     pass
+
 
 class ParsingState(Generic[T, S]):
 
@@ -84,11 +88,9 @@ class ParsingState(Generic[T, S]):
 
     def match_pred(self, pred: Callable[[T], bool]) -> Optional[T]:
         popped = self.peek()
-        if popped != None and pred(popped):
+        if popped is not None and pred(popped):
             return self.pop()
         return None
-
-
 
     def __bool__(self) -> bool:
         return self.value is not None
@@ -97,11 +99,13 @@ class ParsingState(Generic[T, S]):
 # Lexer
 ###############################################################################
 
+
 def nats() -> Gen[int]:
     i = 0
     while True:
         yield i
         i += 1
+
 
 lex_idx = nats()
 
@@ -161,6 +165,7 @@ KEYWORDS = {
 
 Lexem = Tuple[int, str]
 
+
 def lexer(state: ParsingState[str, None]) -> Gen[Lexem]:
 
     while state:
@@ -180,6 +185,7 @@ def lexer(state: ParsingState[str, None]) -> Gen[Lexem]:
             state.rpop()
         else:
             raise ParsingError(f'Unexpected character: {character}')
+
 
 def lexer_string(state: ParsingState[str, None]) -> Gen[Lexem]:
     state.required('"')
@@ -201,6 +207,7 @@ def lexer_string(state: ParsingState[str, None]) -> Gen[Lexem]:
     state.required('"')
     yield LEX_LIT_STR, buffer
 
+
 def lex_number(state: ParsingState[str, None]) -> Gen[Lexem]:
     buffer = ''
     lex_id = LEX_LIT_INT
@@ -213,6 +220,7 @@ def lex_number(state: ParsingState[str, None]) -> Gen[Lexem]:
         LEX_LIT_DOUBLE
     yield lex_id, buffer
 
+
 def lex_operator(state: ParsingState[str, None]) -> Gen[Lexem]:
     buffer = ''
     while state and state.rpeek() in CHR_OPERATOR:
@@ -222,6 +230,7 @@ def lex_operator(state: ParsingState[str, None]) -> Gen[Lexem]:
         yield KEYWORDS[buffer], buffer
     else:
         yield LEX_OPERATOR, buffer
+
 
 def lex_identifier(state: ParsingState[str, None]) -> Gen[Lexem]:
     buffer = state.req_pred(lambda x: x.isalpha())
@@ -247,66 +256,83 @@ def is_lex(lex_id: int) -> Callable[[Lexem], bool]:
 class PatternReject(BaseException):
     pass
 
+
 class Grammar:
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.operator_table: List[Tuple[bool, List[str]]] = []
 
 
 class AstElement:
     pass
 
+
 Value = Union[int, float, str]
+
 
 class Constant(AstElement):
 
     def __init__(self, value: Value):
         self.value = value
 
-    def __str__(self):
+    def __str__(self) -> str:
         if(isinstance(self.value, str)):
             return f"\"{self.value}\""
         return f"{self.value}"
 
+
 class FunctionCall(AstElement):
 
-    def __init__(self, name: str, *arguments: Expression, is_operator: bool = False):
+    def __init__(self,
+                 name: str,
+                 *arguments: Expression,
+                 is_operator: bool = False):
         self.name = name
         self.arguments = arguments
         self.is_operator = is_operator
 
-    def __str__(self):
+    def __str__(self) -> str:
         if (self.is_operator):
             assert(len(self.arguments) == 2)
             return f"({self.arguments[0]} {self.name} {self.arguments[1]})"
         return f"{self.name}" + ''.join(f" ({str(a)})" for a in self.arguments)
 
+
 class FunctionDefinition(AstElement):
 
-    def __init__(self, formal_arguments: List[str], expr: Expression, producing: Optional[str] = None):
+    def __init__(self,
+                 formal_arguments: List[str],
+                 expr: Expression,
+                 producing: Optional[str] = None):
         self.formal_arguments = formal_arguments
         self.expr = expr
         self.producing = producing
 
-    def __str__(self):
+    def __str__(self) -> str:
         return (CHR_FUN
                 + "".join(' ' + s for s in self.formal_arguments)
-                + (f' {CHR_PROD} {self.producing}' if self.producing != None else '')
+                + (f' {CHR_PROD} {self.producing}'
+                    if self.producing is not None
+                    else '')
                 + f' {CHR_FUN_DELIM} '
                 + str(self.expr))
+
 
 class SequenceDefinition(AstElement):
 
     def __init__(self, elements: List[Expression]):
         self.elements = elements
 
-    def __str__(self):
-        return CHR_LBRACK + CHR_COMMA.join(str(e) for e in self.elements) + CHR_RBRACK
+    def __str__(self) -> str:
+        return (CHR_LBRACK
+                + CHR_COMMA.join(str(e) for e in self.elements)
+                + CHR_RBRACK)
 
 
 Atom = Union[FunctionCall, Constant, FunctionDefinition, SequenceDefinition]
 
 Expression = Atom
+
 
 class Assignment(AstElement):
 
@@ -314,7 +340,7 @@ class Assignment(AstElement):
         self.name = name
         self.expr = expr
 
-    def __str__(self):
+    def __str__(self) -> str:
         return self.name + f' {CHR_ASSIGN} ' + str(self.expr)
 
 
@@ -333,18 +359,21 @@ def parse_assignment(state: ParsingState[Lexem, Grammar]) -> Assignment:
     return Assignment(name[1], expr)
 
 
-def match_token(state: ParsingState[Lexem, Any], lex_id: int) -> Optional[Lexem]:
+def match_token(state: ParsingState[Lexem, Any],
+                lex_id: int) -> Optional[Lexem]:
     return state.match_pred(lambda x: x[0] == lex_id)
+
 
 def req_token(state: ParsingState[Lexem, Any], lex_id: int) -> Lexem:
     return state.req_pred(lambda x: x[0] == lex_id)
 
-def parse_application(state) -> FunctionCall:
-    name = req_token(state, LEX_IDENTIFIER);
-    arguments = []
+
+def parse_application(state: ParsingState[Lexem, Grammar]) -> FunctionCall:
+    name = req_token(state, LEX_IDENTIFIER)
+    arguments: List[Expression] = []
     while True:
         try:
-            if (m := match_token(state, LEX_IDENTIFIER)) != None:
+            if (m := match_token(state, LEX_IDENTIFIER)) is not None:
                 arguments.append(FunctionCall(m[1]))
             else:
                 arguments.append(parse_atom(state))
@@ -352,16 +381,18 @@ def parse_application(state) -> FunctionCall:
             break
     return FunctionCall(name[1], *arguments)
 
-def parse_identifier(state) -> str:
+
+def parse_identifier(state: ParsingState[Lexem, Grammar]) -> str:
     token = req_token(state, LEX_IDENTIFIER)
     return token[1]
 
-def parse_function_definition(state) -> FunctionDefinition:
+
+def parse_function_definition(state: ParsingState[Lexem, Grammar]) -> FunctionDefinition:
 
     req_token(state, LEX_FUN)
 
     arguments: List[str] = []
-    while (m := match_token(state, LEX_IDENTIFIER)) != None:
+    while (m := match_token(state, LEX_IDENTIFIER)) is not None:
         arguments.append(m[1])
 
     producing = None
@@ -374,26 +405,28 @@ def parse_function_definition(state) -> FunctionDefinition:
     expr = parse_expression(state)
     return FunctionDefinition(arguments, expr, producing=producing)
 
-def parse_sequence(state) -> Expression:
+
+def parse_sequence(state: ParsingState[Lexem, Grammar]) -> Expression:
 
     req_token(state, LEX_LBRACK)
 
     elements = []
 
-    while state.match(LEX_RBRACK) == None:
+    while match_token(state, LEX_RBRACK) is None:
         elements.append(parse_expression(state))
-        if (match_token(state, LEX_COMMA) == None):
+        if (match_token(state, LEX_COMMA) is None):
             break
 
     req_token(state, LEX_RBRACK)
 
     return SequenceDefinition(elements)
 
-def parse_atom(state) -> Expression:
+
+def parse_atom(state: ParsingState[Lexem, Grammar]) -> Expression:
 
     token = state.peek()
-    if (token == None):
-        raise PatternReject(f"Invalid token: {state.peek()}");
+    if (token is None):
+        raise PatternReject(f"Invalid token: {state.peek()}")
 
     if (token[0] == LEX_LPARE):
         state.rpop()
@@ -417,10 +450,11 @@ def parse_atom(state) -> Expression:
     if (token[0] == LEX_IDENTIFIER):
         return parse_application(state)
 
-    raise PatternReject(f"Invalid token: {state.peek()}");
+    raise PatternReject(f"Invalid token: {state.peek()}")
+
 
 def parse_expression_level(state: ParsingState[Lexem, Grammar],
-                           level : int) -> Expression:
+                           level: int) -> Expression:
 
     if level == 0:
         atom = parse_atom(state)
@@ -431,20 +465,25 @@ def parse_expression_level(state: ParsingState[Lexem, Grammar],
     elements = [parse_expression_level(state, level - 1)]
     operators = []
 
-    while (m := state.match(*[(LEX_OPERATOR, op) for op in operators_table])) != None:
+    operator_tokens = [(LEX_OPERATOR, op) for op in operators_table]
+
+    while (m := state.match(*operator_tokens)) is not None:
         operators.append(m[1])
         elements.append(parse_expression_level(state, level - 1))
 
     if associativity:
         res = elements[-1]
         for i in range(len(elements) - 2, -1, -1):
-            res = FunctionCall(operators[i], elements[i], res, is_operator=True)
+            res = FunctionCall(
+                operators[i], elements[i], res, is_operator=True)
     else:
         res = elements[0]
         for i in range(1, len(elements)):
-            res = FunctionCall(operators[i - 1], res, elements[i], is_operator=True)
+            res = FunctionCall(
+                operators[i - 1], res, elements[i], is_operator=True)
 
     return res
+
 
 def parse_expression(state: ParsingState[Lexem, Grammar]) -> Expression:
     return parse_expression_level(state, len(state.data.operator_table))
@@ -459,6 +498,7 @@ def gen_of_file(filename: str) -> Gen[str]:
         for line in f:
             for c in line:
                 yield c
+
 
 state = ParsingState(gen_of_file('test.sq'), None)
 

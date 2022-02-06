@@ -14,8 +14,8 @@ Gen = Generator[T, None, None]
 indent = 0
 
 
-def loud(f : Callable[..., T]) -> Callable[..., T]:
-    def wrapper(*args : Any, **kwargs : Any) -> T:
+def loud(f: Callable[..., T]) -> Callable[..., T]:
+    def wrapper(*args: Any, **kwargs: Any) -> T:
         global indent
         print(' ' * indent + f.__name__, *args, **kwargs)
         res = None
@@ -109,62 +109,58 @@ def nats() -> Gen[int]:
 
 lex_idx = nats()
 
-LEX_LBRACK = next(lex_idx)
-CHR_LBRACK = '['
-LEX_RBRACK = next(lex_idx)
-CHR_RBRACK = ']'
-LEX_LPARE = next(lex_idx)
-CHR_LPARE = '('
-LEX_RPARE = next(lex_idx)
-CHR_RPARE = ')'
-LEX_LCURL = next(lex_idx)
-CHR_LCURL = '{'
-LEX_RCURL = next(lex_idx)
-CHR_RCURL = '}'
-LEX_COMMA = next(lex_idx)
-CHR_COMMA = ','
-LEX_SEMICOLON = next(lex_idx)
-CHR_SEMICOLON = ';'
+STR_REP = {} 
+TRIV_LEXES = {}
+KEYWORDS = {}
 
+def define_triv_case(c: str) -> Tuple[int, str]:
+    idx = next(lex_idx)
+    TRIV_LEXES[c] = idx
+    STR_REP[idx] = c
+    return idx, c
 
-LEX_OPERATOR = next(lex_idx)
-CHR_OPERATOR = set((':', '+', '-', '*', '/', '%', '<', '>', '=', '$'))
+def define_keyword(c: str) -> Tuple[int, str]: 
+    idx = next(lex_idx)
+    KEYWORDS[c] = idx
+    STR_REP[idx] = c
+    return idx, c
 
-LEX_LIT_INT = next(lex_idx)
-LEX_LIT_DOUBLE = next(lex_idx)
-LEX_LIT_STR = next(lex_idx)
-LEX_LIT_CHR = next(lex_idx)
-LEX_IDENTIFIER = next(lex_idx)
+def define_lex(message: str) -> int: 
+    idx = next(lex_idx)
+    STR_REP[idx] = message
+    return idx
 
-TRIV_LEXES = {
-    CHR_LBRACK: LEX_LBRACK,
-    CHR_RBRACK: LEX_RBRACK,
-    CHR_LPARE: LEX_LPARE,
-    CHR_RPARE: LEX_RPARE,
-    CHR_LCURL: LEX_LCURL,
-    CHR_RCURL: LEX_RCURL,
-    CHR_COMMA: LEX_COMMA,
-    CHR_SEMICOLON: LEX_SEMICOLON
-}
+LEX_LBRACK, CHR_LBRACK = define_triv_case('[')
+LEX_RBRACK, CHR_RBRACK = define_triv_case(']')
+LEX_LPARE, CHR_LPARE = define_triv_case('(')
+LEX_RPARE, CHR_RPARE = define_triv_case(')')
+LEX_LCURL, CHR_LCURL = define_triv_case('{')
+LEX_RCURL, CHR_RCURL = define_triv_case('}')
+LEX_COMMA, CHR_COMMA = define_triv_case(',')
+LEX_SEMICOLON, CHR_SEMICOLON = define_triv_case(';')
 
-LEX_PROD = next(lex_idx)
-CHR_PROD = '=>'
-LEX_FUN = next(lex_idx)
-CHR_FUN = 'fun'
-LEX_FUN_DELIM = next(lex_idx)
-CHR_FUN_DELIM = '->'
-LEX_ASSIGN = next(lex_idx)
-CHR_ASSIGN = ':='
+LEX_OPERATOR = define_lex('operator')
+CHR_OPERATOR = set((':', '+', '-', '*', '/', '%', '<', '>', '=', '$', '|' , '&', '!'))
 
-KEYWORDS = {
-    CHR_PROD: LEX_PROD,
-    CHR_FUN: LEX_FUN,
-    CHR_ASSIGN: LEX_ASSIGN,
-    CHR_FUN_DELIM: LEX_FUN_DELIM
-}
+LEX_LIT_INT = define_lex('int literal')
+LEX_LIT_DOUBLE = define_lex('double literal')
+LEX_LIT_STR = define_lex('str literal')
+LEX_LIT_CHR = define_lex('character literal') 
+LEX_IDENTIFIER = define_lex('identifier')
+
+LEX_PROD, CHR_PROD = define_keyword('=>')
+LEX_FUN, CHR_FUN = define_keyword('fun')
+LEX_FUN_DELIM, CHR_FUN_DELIM= define_keyword('->')
+LEX_ASSIGN, CHR_ASSIGN = define_keyword(':=')
+LEX_LCEOP_OSTART, CHR_LCEOP_OSTART  = define_keyword('>>')
+LEX_LCEOP_CSTART, CHR_LCEOP_CSTART = define_keyword('-<') 
+LEX_LCEOP_OEND, CHR_LCEOP_OEND = define_keyword('<<')
+LEX_LCEOP_CEND, CHR_LCEOP_CEND = define_keyword('>-')
 
 Lexem = Tuple[int, str]
 
+def str_of_lexid(lexid: int) -> str: 
+    return STR_REP[lexid]
 
 def lexer(state: ParsingState[str, None]) -> Gen[Lexem]:
 
@@ -260,7 +256,7 @@ class PatternReject(BaseException):
 class Grammar:
 
     def __init__(self) -> None:
-        self.operator_table: List[Tuple[bool, List[str]]] = []
+        self.operator_table: List[Tuple[bool, List[str], List[str], List[str]]] = []
 
 
 class AstElement:
@@ -281,21 +277,26 @@ class Constant(AstElement):
         return f"{self.value}"
 
 
-class FunctionCall(AstElement):
+class Identifier(AstElement): 
 
-    def __init__(self,
-                 name: str,
-                 *arguments: Expression,
-                 is_operator: bool = False):
-        self.name = name
-        self.arguments = arguments
-        self.is_operator = is_operator
+    def __init__(self, 
+                 name: str): 
+        self.name = name 
 
     def __str__(self) -> str:
-        if (self.is_operator):
-            assert(len(self.arguments) == 2)
-            return f"({self.arguments[0]} {self.name} {self.arguments[1]})"
-        return f"{self.name}" + ''.join(f" ({str(a)})" for a in self.arguments)
+        return self.name
+
+
+class FunctionApplication(AstElement): 
+
+    def __init__(self, 
+                 fun: Expression, 
+                 *arguments: Expression): 
+        self.fun = fun 
+        self.arguments = arguments
+
+    def __str__(self) -> str: 
+        return f"({str(self.fun)})" + ''.join(f" ({str(a)})" for a in self.arguments)
 
 
 class FunctionDefinition(AstElement):
@@ -329,7 +330,7 @@ class SequenceDefinition(AstElement):
                 + CHR_RBRACK)
 
 
-Atom = Union[FunctionCall, Constant, FunctionDefinition, SequenceDefinition]
+Atom = Union[FunctionApplication, Constant, FunctionDefinition, SequenceDefinition, Identifier]
 
 Expression = Atom
 
@@ -360,31 +361,34 @@ def parse_assignment(state: ParsingState[Lexem, Grammar]) -> Assignment:
 
 
 def match_token(state: ParsingState[Lexem, Any],
-                lex_id: int) -> Optional[Lexem]:
-    return state.match_pred(lambda x: x[0] == lex_id)
+                *lex_id: int) -> Optional[Lexem]:
+    return state.match_pred(lambda x: x[0] in lex_id)
 
 
-def req_token(state: ParsingState[Lexem, Any], lex_id: int) -> Lexem:
-    return state.req_pred(lambda x: x[0] == lex_id)
+def req_token(state: ParsingState[Lexem, Any], *lex_id: int) -> Lexem:
+    head = state.rpop()
+    if head[0] not in lex_id:
+        expected = ', '.join(str_of_lexid(i) for i in lex_id)
+        raise RuntimeError(f'expected {expected} but got {head[1]}')
+    return head
 
-
-def parse_application(state: ParsingState[Lexem, Grammar]) -> FunctionCall:
-    name = req_token(state, LEX_IDENTIFIER)
+def parse_application(state: ParsingState[Lexem, Grammar]) -> Atom:
+    fun = parse_atom(state)
     arguments: List[Expression] = []
     while True:
         try:
-            if (m := match_token(state, LEX_IDENTIFIER)) is not None:
-                arguments.append(FunctionCall(m[1]))
-            else:
-                arguments.append(parse_atom(state))
+            arguments.append(parse_atom(state))
         except PatternReject:
             break
-    return FunctionCall(name[1], *arguments)
+    if arguments == []: 
+        return fun
+
+    return FunctionApplication(fun, *arguments)
 
 
-def parse_identifier(state: ParsingState[Lexem, Grammar]) -> str:
+def parse_identifier(state: ParsingState[Lexem, Grammar]) -> Identifier:
     token = req_token(state, LEX_IDENTIFIER)
-    return token[1]
+    return Identifier(token[1])
 
 
 def parse_function_definition(state: ParsingState[Lexem, Grammar]) -> FunctionDefinition:
@@ -398,7 +402,10 @@ def parse_function_definition(state: ParsingState[Lexem, Grammar]) -> FunctionDe
     producing = None
 
     if match_token(state, LEX_PROD):
-        producing = parse_identifier(state)
+        identifier = parse_identifier(state)
+        if identifier is not None: 
+            producing = identifier.name
+
 
     req_token(state, LEX_FUN_DELIM)
 
@@ -427,13 +434,11 @@ def parse_atom(state: ParsingState[Lexem, Grammar]) -> Expression:
     token = state.peek()
     if (token is None):
         raise PatternReject(f"Invalid token: {state.peek()}")
-
     if (token[0] == LEX_LPARE):
         state.rpop()
         expr = parse_expression(state)
         state.required((LEX_RPARE, ')'))
         return expr
-
     if (token[0] == LEX_LIT_STR):
         state.rpop()
         return Constant(str(token[1]))
@@ -447,47 +452,93 @@ def parse_atom(state: ParsingState[Lexem, Grammar]) -> Expression:
         return parse_function_definition(state)
     if (token[0] == LEX_LBRACK):
         return parse_sequence(state)
-    if (token[0] == LEX_IDENTIFIER):
-        return parse_application(state)
+    if (token[0] == LEX_IDENTIFIER): 
+        return parse_identifier(state)
 
     raise PatternReject(f"Invalid token: {state.peek()}")
 
+def parse_expression_level_unary(state: ParsingState[Lexem, Grammar],
+                                 level: int) -> Expression: 
+
+    _, _, prefix, posfix = state.data.operator_table[level - 1]
+    prefix_tokens = [(LEX_OPERATOR, op) for op in prefix]
+    posfix_tokens = [(LEX_OPERATOR, op) for op in posfix]
+
+    prefix_stack = []
+
+    while (m := state.match(*prefix_tokens)) is not None: 
+        prefix_stack.append(Identifier(m[1]))
+
+    body = parse_expression_level(state, level - 1)
+    
+    for prefix_operator in reversed(prefix_stack):
+        body = FunctionApplication(prefix_operator, body)
+
+    while (m := state.match(*posfix_tokens)) is not None: 
+        body = FunctionApplication(Identifier(m[1]), body)
+        
+    return body
 
 def parse_expression_level(state: ParsingState[Lexem, Grammar],
                            level: int) -> Expression:
 
     if level == 0:
-        atom = parse_atom(state)
+        atom = parse_application(state)
         return atom
 
-    associativity, operators_table = state.data.operator_table[level - 1]
+    associativity, infix, _, _ = state.data.operator_table[level - 1]
 
-    elements = [parse_expression_level(state, level - 1)]
+    elements = [parse_expression_level_unary(state, level)]
     operators = []
+    infix_tokens = [(LEX_OPERATOR, op) for op in infix]
 
-    operator_tokens = [(LEX_OPERATOR, op) for op in operators_table]
-
-    while (m := state.match(*operator_tokens)) is not None:
-        operators.append(m[1])
-        elements.append(parse_expression_level(state, level - 1))
+    while (m := state.match(*infix_tokens)) is not None:
+        operators.append(Identifier(m[1]))
+        elements.append(parse_expression_level_unary(state, level))
 
     if associativity:
         res = elements[-1]
         for i in range(len(elements) - 2, -1, -1):
-            res = FunctionCall(
-                operators[i], elements[i], res, is_operator=True)
+            res = FunctionApplication(
+                operators[i], elements[i], res)
     else:
         res = elements[0]
         for i in range(1, len(elements)):
-            res = FunctionCall(
-                operators[i - 1], res, elements[i], is_operator=True)
+            res = FunctionApplication(
+                operators[i - 1], res, elements[i])
 
     return res
 
 
 def parse_expression(state: ParsingState[Lexem, Grammar]) -> Expression:
-    return parse_expression_level(state, len(state.data.operator_table))
 
+    root_level = len(state.data.operator_table)
+
+    operator_stack = []
+
+    while (opening := match_token(state, LEX_LCEOP_CSTART)) != None: 
+        operator_stack.append(parse_expression(state))
+        req_token(state, LEX_LCEOP_OEND)
+    
+    body = parse_expression_level(state, root_level)
+
+    for operator in reversed(operator_stack):
+        body = FunctionApplication(operator, body)
+
+    middle_operator = None
+
+    while match_token(state, LEX_LCEOP_OSTART) is not None: 
+        operator = parse_expression(state)
+        token = req_token(state, LEX_LCEOP_OEND, LEX_LCEOP_CEND)
+        if token[0] == LEX_LCEOP_OEND: 
+            middle_operator = operator 
+            break
+        body = FunctionApplication(operator, body)
+
+    if middle_operator: 
+        right = parse_expression(state)
+        return FunctionApplication(middle_operator, body, right)
+    return body
 
 ###############################################################################
 # Application
@@ -504,9 +555,16 @@ state = ParsingState(gen_of_file('test.sq'), None)
 
 grammar = Grammar()
 
-grammar.operator_table.append((False, ['*', '/']))
-grammar.operator_table.append((False, ['+', '-']))
+grammar.operator_table.append((False, ['!'], [], []))
+grammar.operator_table.append((False, ['*', '/'], [], []))
+grammar.operator_table.append((False, ['+', '-'], [], []))
+grammar.operator_table.append((False, [], ['-'], []))
 
-lex_state = ParsingState(lexer(state), grammar)
+def loud_generator(a : Gen[T]) -> Gen[T]:
+    for e in a:
+        print(e)
+        yield e
+
+lex_state = ParsingState(loud_generator(lexer(state)), grammar)
 
 print('\n'.join(str(s) for s in parse_document(lex_state)))

@@ -13,6 +13,7 @@ Gen = Generator[T, None, None]
 
 indent = 0
 
+
 def loud(f: Callable[..., T]) -> Callable[..., T]:
     def wrapper(*args: Any, **kwargs: Any) -> T:
         global indent
@@ -27,6 +28,19 @@ def loud(f: Callable[..., T]) -> Callable[..., T]:
             print(' ' * indent + str(res))
 
     return wrapper
+
+
+def loud_generator(a: Gen[T]) -> Gen[T]:
+    for e in a:
+        print(e)
+        yield e
+
+
+def gen_of_file(filename: str) -> Gen[str]:
+    with open(filename, 'r') as f:
+        for line in f:
+            yield from line
+
 
 ###############################################################################
 # ParsingState
@@ -112,11 +126,13 @@ STR_REP = {}
 TRIV_LEXES = {}
 KEYWORDS = {}
 
+
 def define_triv_case(c: str) -> Tuple[int, str]:
     idx = next(lex_idx)
     TRIV_LEXES[c] = idx
     STR_REP[idx] = c
     return idx, c
+
 
 def define_keyword(c: str) -> Tuple[int, str]:
     idx = next(lex_idx)
@@ -124,10 +140,12 @@ def define_keyword(c: str) -> Tuple[int, str]:
     STR_REP[idx] = c
     return idx, c
 
+
 def define_lex(message: str) -> int:
     idx = next(lex_idx)
     STR_REP[idx] = message
     return idx
+
 
 LEX_LBRACK, CHR_LBRACK = define_triv_case('[')
 LEX_RBRACK, CHR_RBRACK = define_triv_case(']')
@@ -139,7 +157,8 @@ LEX_COMMA, CHR_COMMA = define_triv_case(',')
 LEX_SEMICOLON, CHR_SEMICOLON = define_triv_case(';')
 
 LEX_OPERATOR = define_lex('operator')
-CHR_OPERATOR = set((':', '+', '-', '*', '/', '%', '<', '>', '=', '$', '|' , '&', '!'))
+CHR_OPERATOR = set((':', '+', '-', '*', '/', '%',
+                    '<', '>', '=', '$', '|', '&', '!'))
 
 LEX_LIT_INT = define_lex('int literal')
 LEX_LIT_DOUBLE = define_lex('double literal')
@@ -149,17 +168,19 @@ LEX_IDENTIFIER = define_lex('identifier')
 
 LEX_PROD, CHR_PROD = define_keyword('=>')
 LEX_FUN, CHR_FUN = define_keyword('fun')
-LEX_FUN_DELIM, CHR_FUN_DELIM= define_keyword('->')
+LEX_FUN_DELIM, CHR_FUN_DELIM = define_keyword('->')
 LEX_ASSIGN, CHR_ASSIGN = define_keyword(':=')
-LEX_LCEOP_OSTART, CHR_LCEOP_OSTART  = define_keyword('>>')
+LEX_LCEOP_OSTART, CHR_LCEOP_OSTART = define_keyword('>>')
 LEX_LCEOP_CSTART, CHR_LCEOP_CSTART = define_keyword('-<')
 LEX_LCEOP_OEND, CHR_LCEOP_OEND = define_keyword('<<')
 LEX_LCEOP_CEND, CHR_LCEOP_CEND = define_keyword('>-')
 
 Lexem = Tuple[int, str]
 
+
 def str_of_lexid(lexid: int) -> str:
     return STR_REP[lexid]
+
 
 def lexer(state: ParsingState[str, None]) -> Gen[Lexem]:
 
@@ -285,7 +306,7 @@ class ScopeStack(Generic[K, V]):
     def pop_scope(self) -> None:
         self.stack.pop()
 
-    def copy(self, layers: Optional[int] = None) -> 'ScopeStack':
+    def copy(self, layers: Optional[int] = None) -> 'ScopeStack[K, V]':
         if layers is None:
             return ScopeStack(self.stack[:])
         return ScopeStack(self.stack[:layers])
@@ -296,8 +317,8 @@ class ScopeStack(Generic[K, V]):
 
 class Interpret:
 
-    def __init__(self):
-        self.sstack : ScopeStack[str, Value] = ScopeStack()
+    def __init__(self) -> None:
+        self.sstack: ScopeStack[str, Value] = ScopeStack()
 
 
 class InterError(BaseException):
@@ -308,8 +329,10 @@ class InterError(BaseException):
 # Parser
 ###############################################################################
 
+
 class ParseError(BaseException):
     pass
+
 
 class PatternReject(BaseException):
     pass
@@ -318,7 +341,8 @@ class PatternReject(BaseException):
 class Grammar:
 
     def __init__(self) -> None:
-        self.operator_table: List[Tuple[bool, List[str], List[str], List[str]]] = []
+        self.operator_table: List[Tuple[bool,
+                                        List[str], List[str], List[str]]] = []
 
 
 class Location:
@@ -330,18 +354,13 @@ class Location:
         return f'{self.filename}:{self.line_num}'
 
 
-class AstElement(Generic[T]):
-
-    def __init__(self, location: Optional[Location] = None):
-        self.location = location
-
-
-    def inter_error(self, message: str) -> InterError:
-        return InterError(f'{str(self.location)} - {message}')
+###############################################################################
+# Values
+###############################################################################
 
 
-    def interpret(self, inter: Interpret) -> T:
-        ...
+class SequenceObject:
+    pass
 
 
 class FunctionObject:
@@ -350,15 +369,32 @@ class FunctionObject:
         super().__init__()
         self.f = f
         self.argument_count = argument_count
+        self.closure: Dict[str, Value] = {}
 
-    def apply(self, inter: Interpret, *args) -> Value:
+    def apply(self, inter: Interpret, *args: Value) -> Value:
         if len(args) != self.argument_count:
-            raise InterError(f'function takes {self.argument_count} arguments, '
-                             +f'but {len(args)} were provided.')
+            raise InterError(f'function takes {self.argument_count} arguments'
+                             + f', but {len(args)} were provided.')
         return self.f(inter, *args)
 
 
-Value = Union[int, float, str, FunctionObject]
+Value = Union[int, float, str, FunctionObject, SequenceObject]
+
+###############################################################################
+# Ast
+###############################################################################
+
+
+class AstElement(Generic[T]):
+
+    def __init__(self, location: Optional[Location] = None):
+        self.location = location
+
+    def inter_error(self, message: str) -> InterError:
+        return InterError(f'{str(self.location)} - {message}')
+
+    def interpret(self, inter: Interpret) -> T:
+        ...
 
 
 class Constant(AstElement[Value]):
@@ -403,7 +439,8 @@ class FunctionApplication(AstElement[Value]):
         self.arguments = arguments
 
     def __str__(self) -> str:
-        return f"({str(self.fun)})" + ''.join(f" ({str(a)})" for a in self.arguments)
+        return (f"({str(self.fun)})" +
+                ''.join(f" ({str(a)})" for a in self.arguments))
 
     def interpret(self, inter: Interpret) -> Value:
         fun_val = self.fun.interpret(inter)
@@ -411,7 +448,8 @@ class FunctionApplication(AstElement[Value]):
         if not isinstance(fun_val, FunctionObject):
             raise self.inter_error('value is not a function')
         try:
-            return fun_val.apply(inter, *[a.interpret(inter) for a in self.arguments])
+            return fun_val.apply(inter,
+                                 *[a.interpret(inter) for a in self.arguments])
         except InterError as e:
             raise self.inter_error(str(e))
 
@@ -451,8 +489,7 @@ class FunctionDefinition(AstElement[FunctionObject]):
         return FunctionObject(f, len(self.formal_arguments))
 
 
-
-class SequenceDefinition(AstElement):
+class SequenceDefinition(AstElement[SequenceObject]):
 
     def __init__(self, elements: List[Expression]):
         super().__init__()
@@ -464,11 +501,17 @@ class SequenceDefinition(AstElement):
                 + CHR_RBRACK)
 
 
-Atom = Union[FunctionApplication, Constant, FunctionDefinition, SequenceDefinition, Identifier]
+Atom = Union[FunctionApplication,
+             Constant,
+             FunctionDefinition,
+             SequenceDefinition,
+             Identifier]
+
 
 Expression = Atom
 
-class Assignment(AstElement[None]):
+
+class Assignment(AstElement[Tuple[str, Value]]):
 
     def __init__(self, name: str, expr: Expression):
         super().__init__()
@@ -484,33 +527,23 @@ class Assignment(AstElement[None]):
         return self.name, value
 
 
-class Document(AstElement[None]):
+class Document(AstElement[Dict[str, Value]]):
 
     def __init__(self, *assignments: Assignment) -> None:
         super().__init__()
         self.assignments = assignments
 
     def interpret(self, inter: Interpret) -> Dict[str, Value]:
-        res : Dict[str, Value] = {}
+        res: Dict[str, Value] = {}
         for assignment in self.assignments:
             key, value = assignment.interpret(inter)
             res[key] = value
         return res
 
 
-def parse_document(state: ParsingState[Lexem, Grammar]) -> Document:
-    res : List[Assignment] = []
-    while state:
-        res.append(parse_assignment(state))
-    return Document(*res)
-
-
-def parse_assignment(state: ParsingState[Lexem, Grammar]) -> Assignment:
-    name = state.req_pred(is_lex(LEX_IDENTIFIER))
-    state.req_pred(is_lex(LEX_ASSIGN))
-    expr = parse_expression(state)
-    req_token(state, LEX_SEMICOLON)
-    return Assignment(name[1], expr)
+###############################################################################
+# Parsing
+###############################################################################
 
 
 def match_token(state: ParsingState[Lexem, Any],
@@ -532,6 +565,20 @@ def req_token(state: ParsingState[Lexem, Any], *lex_id: int) -> Lexem:
     return head
 
 
+def parse_document(state: ParsingState[Lexem, Grammar]) -> Document:
+    res: List[Assignment] = []
+    while state:
+        res.append(parse_assignment(state))
+    return Document(*res)
+
+
+def parse_assignment(state: ParsingState[Lexem, Grammar]) -> Assignment:
+    name = state.req_pred(is_lex(LEX_IDENTIFIER))
+    state.req_pred(is_lex(LEX_ASSIGN))
+    expr = parse_expression(state)
+    req_token(state, LEX_SEMICOLON)
+    return Assignment(name[1], expr)
+
 
 def parse_application(state: ParsingState[Lexem, Grammar]) -> Atom:
     fun = parse_atom(state)
@@ -552,7 +599,8 @@ def parse_identifier(state: ParsingState[Lexem, Grammar]) -> Identifier:
     return Identifier(token[1])
 
 
-def parse_function_definition(state: ParsingState[Lexem, Grammar]) -> FunctionDefinition:
+def parse_function_definition(state: ParsingState[Lexem, Grammar]) \
+        -> FunctionDefinition:
 
     req_token(state, LEX_FUN)
 
@@ -566,7 +614,6 @@ def parse_function_definition(state: ParsingState[Lexem, Grammar]) -> FunctionDe
         identifier = parse_identifier(state)
         if identifier is not None:
             producing = identifier.name
-
 
     req_token(state, LEX_FUN_DELIM)
 
@@ -618,6 +665,7 @@ def parse_atom(state: ParsingState[Lexem, Grammar]) -> Expression:
 
     raise PatternReject(f"Invalid token: {state.peek()}")
 
+
 def parse_expression_level_unary(state: ParsingState[Lexem, Grammar],
                                  level: int) -> Expression:
 
@@ -639,6 +687,7 @@ def parse_expression_level_unary(state: ParsingState[Lexem, Grammar],
         body = FunctionApplication(Identifier(m[1]), body)
 
     return body
+
 
 def parse_expression_level(state: ParsingState[Lexem, Grammar],
                            level: int) -> Expression:
@@ -677,7 +726,7 @@ def parse_expression(state: ParsingState[Lexem, Grammar]) -> Expression:
 
     operator_stack = []
 
-    while (opening := match_token(state, LEX_LCEOP_CSTART)) != None:
+    while match_token(state, LEX_LCEOP_CSTART) is not None:
         operator_stack.append(parse_expression(state))
         req_token(state, LEX_LCEOP_OEND)
 
@@ -701,48 +750,29 @@ def parse_expression(state: ParsingState[Lexem, Grammar]) -> Expression:
         return FunctionApplication(middle_operator, body, right)
     return body
 
+
 ###############################################################################
-# Application
+# Builting building
 ###############################################################################
 
-def gen_of_file(filename: str) -> Gen[str]:
-    with open(filename, 'r') as f:
-        for line in f:
-            for c in line:
-                yield c
 
-
-state = ParsingState(gen_of_file('test.sq'), None)
-
-grammar = Grammar()
-
-OP_LAYER_COUNT = 5
-
-for i in range(5):
-    grammar.operator_table.append((False, [], [], []))
-    grammar.operator_table.append((True, [], [], []))
-
-def loud_generator(a : Gen[T]) -> Gen[T]:
-    for e in a:
-        print(e)
-        yield e
-
-lex_state = ParsingState(lexer(state), grammar)
-
-inter = Interpret()
-inter.sstack.add_scope()
-
-def define_builtin(inter: Interpret, name: str, val: Value):
+def define_builtin(inter: Interpret, name: str, val: Value) -> None:
     inter.sstack.put(name, val)
 
-def builtin_function(inter: Interpret, name: str, argument_count: int):
+
+def builtin_function(inter: Interpret, name: str, argument_count: int) \
+        -> Callable[[Callable[..., Value]], Callable[..., Value]]:
     def builtin_function_d(fun: Callable[..., Value]) -> Callable[..., Value]:
         define_builtin(inter, name, FunctionObject(fun, argument_count))
         return fun
     return builtin_function_d
 
-def builtin_operator(inter: Interpret, name: str, arity: int, layer: int, associativity: bool):
+
+def builtin_operator(inter: Interpret, name: str, arity: int, layer: int,
+                     associativity: bool) \
+        -> Callable[[Callable[..., Value]], Callable[..., Value]]:
     assert arity in {1, 2}
+
     def builtin_function_d(fun: Callable[..., Value]) -> Callable[..., Value]:
         define_builtin(inter, name, FunctionObject(fun, arity))
 
@@ -758,12 +788,34 @@ def builtin_operator(inter: Interpret, name: str, arity: int, layer: int, associ
         return fun
     return builtin_function_d
 
+
+###############################################################################
+# Application
+###############################################################################
+
+
+state = ParsingState(gen_of_file('test.sq'), None)
+
+grammar = Grammar()
+OP_LAYER_COUNT = 5
+for i in range(5):
+    grammar.operator_table.append((False, [], [], []))
+    grammar.operator_table.append((True, [], [], []))
+
+lex_state = ParsingState(lexer(state), grammar)
+
+inter = Interpret()
+inter.sstack.add_scope()
+
+
 @builtin_operator(inter, '+', 2, 0, False)
-def op_plus(_: Interpret, a: Value, b: Value):
+def op_plus(_: Interpret, a: Value, b: Value) -> int:
     assert(isinstance(a, int))
     assert(isinstance(b, int))
     return a + b
 
+
 document = parse_document(lex_state)
+
 
 print(document.interpret(inter))

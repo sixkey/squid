@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import (Generator, TypeVar, Tuple, Generic, Optional, Callable,
-                    Union, List, Any, Dict)
+                    Union, List, Any, Dict, Set)
 
 T = TypeVar('T')
 S = TypeVar('S')
@@ -175,6 +175,10 @@ LEX_LCEOP_CSTART, CHR_LCEOP_CSTART = define_keyword('-<')
 LEX_LCEOP_OEND, CHR_LCEOP_OEND = define_keyword('<<')
 LEX_LCEOP_CEND, CHR_LCEOP_CEND = define_keyword('>-')
 
+LEX_IF, CHR_IF = define_keyword('if')
+LEX_THEN, CHR_THEN = define_keyword('then')
+LEX_ELSE, CHR_ELSE = define_keyword('else')
+
 Lexem = Tuple[int, str]
 
 
@@ -271,13 +275,27 @@ def is_lex(lex_id: int) -> Callable[[Lexem], bool]:
 K = TypeVar('K')
 V = TypeVar('V')
 
+class FutureBinding(Generic[T]):
+
+    def __init__(self) -> None:
+        self.value : Optional[T]
+
+
+Binding = Union[T, FutureBinding[T]]
 
 class ScopeStack(Generic[K, V]):
 
-    def __init__(self, stack: Optional[List[Dict[K, V]]] = None):
-        self.stack: List[Dict[K, V]] = stack if stack is not None else []
+    def __init__(self, stack: Optional[List[Dict[K, Binding[V]]]] = None):
+        self.stack: List[Dict[K, Binding[V]]] = (
+                stack if stack is not None else [])
 
     def lookup(self, symbol: K) -> Optional[V]:
+        value = self.lookup_future(symbol)
+        if isinstance(value, FutureBinding):
+            return value.value
+        return value
+
+    def lookup_future(self, symbol: K) -> Optional[Union[V, FutureBinding[V]]]:
         for dic in reversed(self.stack):
             if symbol in dic:
                 return dic[symbol]
@@ -297,6 +315,10 @@ class ScopeStack(Generic[K, V]):
         self.stack[-1][symbol] = value
 
     def put_on_last(self, symbol: K, value: V) -> None:
+        assert self.stack
+        self.stack[-1][symbol] = value
+
+    def put_on_last_future(self, symbol: K, value: Binding[V]) -> None:
         assert self.stack
         self.stack[-1][symbol] = value
 
@@ -340,9 +362,33 @@ class PatternReject(BaseException):
 
 class Grammar:
 
-    def __init__(self) -> None:
+    def __init__(self, operator_levels: int) -> None:
         self.operator_table: List[Tuple[bool,
                                         List[str], List[str], List[str]]] = []
+
+        for _ in range(operator_levels):
+            self.operator_table.append((False, [], [], []))
+            self.operator_table.append((True, [], [], []))
+
+        self.operators: Set[str] = set()
+
+    def add_operator(self, name: str, level: int, arity: int,
+                     associativity: int):
+
+        if level >= len(self.operator_table):
+            raise RuntimeError(
+                f'operator level {level} exceeded {len(self.operator_table)}')
+
+        table = self.operator_table[level * 2 + (1 if associativity else 0)]
+
+        if arity == 2:
+            table[1].append(name)
+        elif arity == 1 and not associativity:
+            table[2].append(name)
+        elif arity == 1 and associativity:
+            table[3].append(name)
+
+        self.operators.add(name)
 
 
 class Location:
@@ -365,20 +411,34 @@ class SequenceObject:
 
 class FunctionObject:
 
-    def __init__(self, f: Callable[..., Value], argument_count: int):
+    def __init__(self, f: Callable[..., Value], argument_count: int,
+                 *partial: Value):
         super().__init__()
         self.f = f
         self.argument_count = argument_count
-        self.closure: Dict[str, Value] = {}
+        self.partial = partial
+
+    def copy(self, *partial: Value) -> FunctionObject:
+        return FunctionObject(self.f, self.argument_count - len(partial), *partial)
 
     def apply(self, inter: Interpret, *args: Value) -> Value:
-        if len(args) != self.argument_count:
-            raise InterError(f'function takes {self.argument_count} arguments'
-                             + f', but {len(args)} were provided.')
-        return self.f(inter, *args)
+        if len(args) >= self.argument_count:
+            res = self.f(inter, *self.partial, *args[:self.argument_count])
+            if (isinstance(res, FunctionObject)): 
+                return res.apply(inter, *args[self.argument_count:])
+            if len(args) != self.argument_count: 
+                raise InterError(
+                    f'Function takes {self.argument_count} but '+
+                    f'received {len(args)}')
+            return res
+        return self.copy(*args)
+
+    def __repr__(self) -> str:
+        return f'FunctionObject {self.argument_count}'
 
 
-Value = Union[int, float, str, FunctionObject, SequenceObject]
+Value = Union[bool, int, float, str, FunctionObject, SequenceObject]
+
 
 ###############################################################################
 # Ast
@@ -396,6 +456,9 @@ class AstElement(Generic[T]):
     def interpret(self, inter: Interpret) -> T:
         ...
 
+    def get_free_names(self) -> Set[str]:
+        ...
+
 
 class Constant(AstElement[Value]):
 
@@ -410,6 +473,9 @@ class Constant(AstElement[Value]):
 
     def interpret(self, _: Interpret) -> Value:
         return self.value
+
+    def get_free_names(self) -> Set[str]:
+        return set()
 
 
 class Identifier(AstElement[Value]):
@@ -427,6 +493,9 @@ class Identifier(AstElement[Value]):
         if val is None:
             raise self.inter_error(f"'{self.name}' not defined")
         return val
+
+    def get_free_names(self) -> Set[str]:
+        return set([self.name])
 
 
 class FunctionApplication(AstElement[Value]):
@@ -453,6 +522,16 @@ class FunctionApplication(AstElement[Value]):
         except InterError as e:
             raise self.inter_error(str(e))
 
+    def get_free_names(self) -> Set[str]:
+        res = self.fun.get_free_names()
+        for arg in self.arguments:
+            res.update(arg.get_free_names())
+        return res
+
+
+def list_of_opt(opt: Optional[T]) -> List[T]:
+    return [] if opt is None else [opt]
+
 
 class FunctionDefinition(AstElement[FunctionObject]):
 
@@ -464,6 +543,7 @@ class FunctionDefinition(AstElement[FunctionObject]):
         self.formal_arguments = formal_arguments
         self.expr = expr
         self.producing = producing
+        self.capture_names = self.get_free_names()
 
     def __str__(self) -> str:
         return (CHR_FUN
@@ -474,11 +554,28 @@ class FunctionDefinition(AstElement[FunctionObject]):
                 + f' {CHR_FUN_DELIM} '
                 + str(self.expr))
 
-    def interpret(self, _: Interpret) -> FunctionObject:
+    def interpret(self, inter: Interpret) -> FunctionObject:
+
+        closure : Dict[str, Binding[Value]] = {}
+
+        for name in self.capture_names:
+            value = inter.sstack.lookup_future(name)
+            if value is None:
+                raise self.inter_error(f"value '{name}' not defined")
+            closure[name] = value
+
         def f(inter: Interpret, *args: Value) -> Value:
+
             inter.sstack.add_scope()
+
+            for name, value in closure.items():
+                inter.sstack.put_on_last_future(name, value)
+
+            inter.sstack.add_scope()
+
             for name, arg in zip(self.formal_arguments, args):
                 inter.sstack.put_on_last(name, arg)
+
             try:
                 res = self.expr.interpret(inter)
                 return res
@@ -486,7 +583,15 @@ class FunctionDefinition(AstElement[FunctionObject]):
                 raise
             finally:
                 inter.sstack.pop_scope()
+                inter.sstack.pop_scope()
+
         return FunctionObject(f, len(self.formal_arguments))
+
+    def get_free_names(self) -> Set[str]:
+        names = self.expr.get_free_names()
+        remove = set(self.formal_arguments + list_of_opt(self.producing))
+        names = names.difference(remove)
+        return names
 
 
 class SequenceDefinition(AstElement[SequenceObject]):
@@ -501,11 +606,41 @@ class SequenceDefinition(AstElement[SequenceObject]):
                 + CHR_RBRACK)
 
 
+class IfStmt(AstElement[Value]):
+
+    def __init__(self, cond: Expression, branch_true: Expression,
+                 branch_false: Expression) -> None:
+        self.cond = cond
+        self.branch_true = branch_true
+        self.branch_false = branch_false
+
+    def interpret(self, inter: Interpret) -> Value:
+
+        cond_res = self.cond.interpret(inter)
+
+        if cond_res:
+            return self.branch_true.interpret(inter)
+        else:
+            return self.branch_false.interpret(inter)
+
+    def __str__(self) -> str:
+        return (f'{CHR_IF} {str(self.cond)} '
+                +f'{CHR_THEN} {str(self.branch_true)}'
+                +f'{CHR_ELSE} {str(self.branch_false)}')
+
+    def get_free_names(self) -> Set[str]:
+        res = self.cond.get_free_names()
+        res.update(self.branch_true.get_free_names())
+        res.update(self.branch_false.get_free_names())
+        return res
+
+
 Atom = Union[FunctionApplication,
              Constant,
              FunctionDefinition,
              SequenceDefinition,
-             Identifier]
+             Identifier,
+             IfStmt]
 
 
 Expression = Atom
@@ -522,9 +657,16 @@ class Assignment(AstElement[Tuple[str, Value]]):
         return self.name + f' {CHR_ASSIGN} ' + str(self.expr)
 
     def interpret(self, inter: Interpret) -> Tuple[str, Value]:
+
+        binding : FutureBinding[Value] = FutureBinding()
+        inter.sstack.put_on_last_future(self.name, binding)
         value = self.expr.interpret(inter)
+        binding.value = value
         inter.sstack.put_on_last(self.name, value)
         return self.name, value
+
+    def get_free_names(self) -> Set[str]:
+        return self.expr.get_free_names()
 
 
 class Document(AstElement[Dict[str, Value]]):
@@ -533,12 +675,22 @@ class Document(AstElement[Dict[str, Value]]):
         super().__init__()
         self.assignments = assignments
 
+    def __str__(self) -> str:
+        return '\n'.join(str(a) for a in self.assignments)
+
     def interpret(self, inter: Interpret) -> Dict[str, Value]:
         res: Dict[str, Value] = {}
         for assignment in self.assignments:
             key, value = assignment.interpret(inter)
             res[key] = value
         return res
+
+    def get_free_names(self) -> Set[str]:
+        res = set()
+        for a in self.assignments:
+            res.update(a.get_free_names())
+        return res
+
 
 
 ###############################################################################
@@ -563,6 +715,12 @@ def req_token(state: ParsingState[Lexem, Any], *lex_id: int) -> Lexem:
     if head[0] not in lex_id:
         raise RuntimeError(f'expected {expected} but got {head[1]}')
     return head
+
+def peek_token(state: ParsingState[Lexem, Any]) -> Optional[int]:
+    lexem = state.peek()
+    if lexem is None:
+        return None
+    return lexem[0]
 
 
 def parse_document(state: ParsingState[Lexem, Grammar]) -> Document:
@@ -636,16 +794,26 @@ def parse_sequence(state: ParsingState[Lexem, Grammar]) -> Expression:
 
     return SequenceDefinition(elements)
 
+def parse_if_stmt(state: ParsingState[Lexem, Grammar]) -> IfStmt:
+    req_token(state, LEX_IF)
+    cond = parse_expression(state)
+    req_token(state, LEX_THEN)
+    branch_true = parse_expression(state)
+    req_token(state, LEX_ELSE)
+    branch_false = parse_expression(state)
+    return IfStmt(cond, branch_true, branch_false)
+
 
 def parse_atom(state: ParsingState[Lexem, Grammar]) -> Expression:
 
     token = state.peek()
     if (token is None):
         raise PatternReject(f"Invalid token: {state.peek()}")
+
     if (token[0] == LEX_LPARE):
         state.rpop()
         expr = parse_expression(state)
-        state.required((LEX_RPARE, ')'))
+        req_token(state, LEX_RPARE)
         return expr
     if (token[0] == LEX_LIT_STR):
         state.rpop()
@@ -662,6 +830,8 @@ def parse_atom(state: ParsingState[Lexem, Grammar]) -> Expression:
         return parse_sequence(state)
     if (token[0] == LEX_IDENTIFIER):
         return parse_identifier(state)
+    if (token[0] == LEX_IF):
+        return parse_if_stmt(state)
 
     raise PatternReject(f"Invalid token: {state.peek()}")
 
@@ -702,9 +872,18 @@ def parse_expression_level(state: ParsingState[Lexem, Grammar],
     operators = []
     infix_tokens = [(LEX_OPERATOR, op) for op in infix]
 
-    while (m := state.match(*infix_tokens)) is not None:
-        operators.append(Identifier(m[1]))
-        elements.append(parse_expression_level_unary(state, level))
+
+    while peek_token(state) == LEX_OPERATOR:
+        operator = state.rpeek()[1]
+
+        if operator in infix:
+            state.rpop()
+            operators.append(Identifier(operator))
+            elements.append(parse_expression_level_unary(state, level))
+        else:
+            if operator not in state.data.operators:
+                raise ParsingError(f'operator {operator} not defined')
+            break
 
     if associativity:
         res = elements[-1]
@@ -768,23 +947,14 @@ def builtin_function(inter: Interpret, name: str, argument_count: int) \
     return builtin_function_d
 
 
-def builtin_operator(inter: Interpret, name: str, arity: int, layer: int,
-                     associativity: bool) \
+def builtin_operator(inter: Interpret, grammar: Grammar, name: str, level: int,
+                     arity: int, associativity: bool) \
         -> Callable[[Callable[..., Value]], Callable[..., Value]]:
     assert arity in {1, 2}
 
     def builtin_function_d(fun: Callable[..., Value]) -> Callable[..., Value]:
         define_builtin(inter, name, FunctionObject(fun, arity))
-
-        table = grammar.operator_table[layer * 2 + (1 if associativity else 0)]
-
-        if arity == 2:
-            table[1].append(name)
-        elif arity == 1 and not associativity:
-            table[2].append(name)
-        elif arity == 1 and associativity:
-            table[3].append(name)
-
+        grammar.add_operator(name, level, arity, associativity)
         return fun
     return builtin_function_d
 
@@ -796,26 +966,47 @@ def builtin_operator(inter: Interpret, name: str, arity: int, layer: int,
 
 state = ParsingState(gen_of_file('test.sq'), None)
 
-grammar = Grammar()
-OP_LAYER_COUNT = 5
-for i in range(5):
-    grammar.operator_table.append((False, [], [], []))
-    grammar.operator_table.append((True, [], [], []))
+grammar = Grammar(5)
 
-lex_state = ParsingState(lexer(state), grammar)
+lex_state = ParsingState((lexer(state)), grammar)
 
 inter = Interpret()
 inter.sstack.add_scope()
 
 
-@builtin_operator(inter, '+', 2, 0, False)
+def type_check(a: Value, b) -> None:
+    if not isinstance(a, b):
+        raise TypeError(f'{a} is not of type {b}')
+
+
+@builtin_operator(inter, grammar, '+', 1, 2, False)
 def op_plus(_: Interpret, a: Value, b: Value) -> int:
-    assert(isinstance(a, int))
-    assert(isinstance(b, int))
+    type_check(a, int)
+    type_check(b, int)
     return a + b
+
+
+@builtin_operator(inter, grammar, '*', 1, 2, False)
+def op_mul(_: Interpret, a: Value, b: Value) -> int:
+    type_check(a, int)
+    type_check(b, int)
+    return a * b
+
+
+@builtin_operator(inter, grammar, '-', 1, 2, False)
+def op_minus(_: Interpret, a: Value, b: Value) -> int:
+    type_check(a, int)
+    type_check(b, int)
+    return a - b
+
+
+@builtin_operator(inter, grammar, '=', 0, 2, False)
+def op_eq(_: Interpret, a: Value, b: Value) -> bool:
+    return a == b
 
 
 document = parse_document(lex_state)
 
+res = document.interpret(inter)
 
-print(document.interpret(inter))
+print(res['main'])

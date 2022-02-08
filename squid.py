@@ -1,6 +1,40 @@
+###############################################################################
+# TODO 
+###############################################################################
+"""
+
+Syntax: 
+    - let in 
+
+Operators: 
+    - operator definition
+    - unary versus binary - different namespace (different function 
+                            definitions)
+
+Evaluation: 
+    - solving recursion problems, probably using different stack
+    - interpreter error printing 
+
+Types: 
+    - type checking
+
+Sequence: 
+    - sequence interpreting
+    - intensional sequences
+    - sets
+
+Field: 
+    - basic definition
+
+"""
+###############################################################################
+###############################################################################
+###############################################################################
+
+
 from __future__ import annotations
 from typing import (Generator, TypeVar, Tuple, Generic, Optional, Callable,
-                    Union, List, Any, Dict, Set)
+                    Union, List, Any, Dict, Set, Iterable)
 
 T = TypeVar('T')
 S = TypeVar('S')
@@ -53,10 +87,15 @@ class ParsingError(BaseException):
 
 class ParsingState(Generic[T, S]):
 
-    def __init__(self, gen: Gen[T], data: S):
+    def __init__(self, gen: Gen[T], data: S, row_element: Optional[T] = None):
         self.gen = gen
         self.data = data
         self.value: Optional[T] = next(self.gen)
+
+        self.row_element : Optional[T] = row_element
+
+        self.row_counter = 0
+        self.col_counter = 0
 
     def peek(self) -> Optional[T]:
         return self.value
@@ -70,6 +109,10 @@ class ParsingState(Generic[T, S]):
     def pop(self) -> Optional[T]:
         res = self.value
         try:
+            self.col_counter += 1
+            if self.row_element is not None and self.value == self.row_element:
+                self.row_counter += 1
+                self.col_counter = 0
             self.value = next(self.gen)
         except StopIteration:
             self.value = None
@@ -137,7 +180,7 @@ def define_triv_case(c: str) -> Tuple[int, str]:
 def define_keyword(c: str) -> Tuple[int, str]:
     idx = next(lex_idx)
     KEYWORDS[c] = idx
-    STR_REP[idx] = c
+    STR_REP[idx] = f"'{c}'"
     return idx, c
 
 
@@ -179,8 +222,11 @@ LEX_IF, CHR_IF = define_keyword('if')
 LEX_THEN, CHR_THEN = define_keyword('then')
 LEX_ELSE, CHR_ELSE = define_keyword('else')
 
-Lexem = Tuple[int, str]
+LEX_EOF = define_lex('eof')
+CHR_EOF = 'eof';
 
+LexemCore = Tuple[int, str]
+Lexem = Tuple[int, str, Tuple[int, int]]
 
 def str_of_lexid(lexid: int) -> str:
     return STR_REP[lexid]
@@ -190,24 +236,31 @@ def lexer(state: ParsingState[str, None]) -> Gen[Lexem]:
 
     while state:
         character = state.rpeek()
+        row_idx = state.row_counter
+        col_idx = state.col_counter
+        lexem = None
         if character == '"':
-            yield from lexer_string(state)
+            lexem = lexer_string(state)
         elif character.isdigit():
-            yield from lex_number(state)
+            lexem = lex_number(state)
         elif character.isalpha():
-            yield from lex_identifier(state)
+            lexem = lex_identifier(state)
         elif character in CHR_OPERATOR:
-            yield from lex_operator(state)
+            lexem = lex_operator(state)
         elif character in TRIV_LEXES:
             state.rpop()
-            yield TRIV_LEXES[character], character
+            lexem = TRIV_LEXES[character], character
         elif character.isspace():
             state.rpop()
         else:
             raise ParsingError(f'Unexpected character: {character}')
 
+        if lexem != None:
+            yield lexem[0], lexem[1], (row_idx, col_idx)
+    yield LEX_EOF, CHR_EOF, (state.row_counter, state.col_counter)
 
-def lexer_string(state: ParsingState[str, None]) -> Gen[Lexem]:
+
+def lexer_string(state: ParsingState[str, None]) -> LexemCore:
     state.required('"')
     buffer = ''
     escape = False
@@ -225,10 +278,10 @@ def lexer_string(state: ParsingState[str, None]) -> Gen[Lexem]:
         else:
             buffer += character
     state.required('"')
-    yield LEX_LIT_STR, buffer
+    return LEX_LIT_STR, buffer
 
 
-def lex_number(state: ParsingState[str, None]) -> Gen[Lexem]:
+def lex_number(state: ParsingState[str, None]) -> LexemCore:
     buffer = ''
     lex_id = LEX_LIT_INT
     while state and state.rpeek().isdigit():
@@ -238,34 +291,28 @@ def lex_number(state: ParsingState[str, None]) -> Gen[Lexem]:
         while state and state.rpeek().isdigit():
             buffer += state.rpop()
         LEX_LIT_DOUBLE
-    yield lex_id, buffer
+    return lex_id, buffer
 
 
-def lex_operator(state: ParsingState[str, None]) -> Gen[Lexem]:
+def lex_operator(state: ParsingState[str, None]) -> LexemCore:
     buffer = ''
     while state and state.rpeek() in CHR_OPERATOR:
         buffer += state.rpop()
 
     if buffer in KEYWORDS:
-        yield KEYWORDS[buffer], buffer
+        return KEYWORDS[buffer], buffer
     else:
-        yield LEX_OPERATOR, buffer
+        return LEX_OPERATOR, buffer
 
 
-def lex_identifier(state: ParsingState[str, None]) -> Gen[Lexem]:
+def lex_identifier(state: ParsingState[str, None]) -> LexemCore:
     buffer = state.req_pred(lambda x: x.isalpha())
     while state and state.rpeek().isalnum() or state.rpeek() == '_':
         buffer += state.rpop()
     if buffer in KEYWORDS:
-        yield KEYWORDS[buffer], buffer
+        return KEYWORDS[buffer], buffer
     else:
-        yield LEX_IDENTIFIER, buffer
-
-
-def is_lex(lex_id: int) -> Callable[[Lexem], bool]:
-    def is_lex_w(lexem: Lexem) -> bool:
-        return lexem[0] == lex_id
-    return is_lex_w
+        return LEX_IDENTIFIER, buffer
 
 
 # ScopeStack
@@ -424,9 +471,9 @@ class FunctionObject:
     def apply(self, inter: Interpret, *args: Value) -> Value:
         if len(args) >= self.argument_count:
             res = self.f(inter, *self.partial, *args[:self.argument_count])
-            if (isinstance(res, FunctionObject)): 
+            if (isinstance(res, FunctionObject)):
                 return res.apply(inter, *args[self.argument_count:])
-            if len(args) != self.argument_count: 
+            if len(args) != self.argument_count:
                 raise InterError(
                     f'Function takes {self.argument_count} but '+
                     f'received {len(args)}')
@@ -702,18 +749,32 @@ def match_token(state: ParsingState[Lexem, Any],
                 *lex_id: int) -> Optional[Lexem]:
     return state.match_pred(lambda x: x[0] in lex_id)
 
+def str_of_location(location: Tuple[int, int]) -> str:
+    return f'{location[0]}:{location[1]}'
+
+def perror_msg(location: Tuple[int, int], message: str) -> str:
+    return f'{str_of_location(location)} - {message}'
+
+def perror_lex_msg(lex: Lexem, message: str) -> str:
+    return perror_msg(lex[2], message)
+
+def perror_expected(lex: Lexem, *expected: str) -> str:
+    return perror_lex_msg(lex,
+                          "expected " + ', '.join(f"{e}" for e in expected)
+                          + f" but got '{lex[1]}'")
+
+def parsing_error(location: Tuple[int, int], message: str) -> ParseError:
+    return ParseError(perror_msg(location, message))
+
 
 def req_token(state: ParsingState[Lexem, Any], *lex_id: int) -> Lexem:
-    expected = ', '.join(str_of_lexid(i) for i in lex_id)
 
     head = None
-    try:
-        head = state.rpop()
-    except ParseError:
-        head = (-1, 'eof')
+    head = state.rpop()
 
     if head[0] not in lex_id:
-        raise RuntimeError(f'expected {expected} but got {head[1]}')
+        raise ParseError(
+            perror_expected(head, *(str_of_lexid(i) for i in lex_id)))
     return head
 
 def peek_token(state: ParsingState[Lexem, Any]) -> Optional[int]:
@@ -725,14 +786,15 @@ def peek_token(state: ParsingState[Lexem, Any]) -> Optional[int]:
 
 def parse_document(state: ParsingState[Lexem, Grammar]) -> Document:
     res: List[Assignment] = []
-    while state:
+    while state and state.peek()[0] != LEX_EOF:
         res.append(parse_assignment(state))
+    req_token(state, LEX_EOF)
     return Document(*res)
 
 
 def parse_assignment(state: ParsingState[Lexem, Grammar]) -> Assignment:
-    name = state.req_pred(is_lex(LEX_IDENTIFIER))
-    state.req_pred(is_lex(LEX_ASSIGN))
+    name = req_token(state, LEX_IDENTIFIER)
+    req_token(state, LEX_ASSIGN)
     expr = parse_expression(state)
     req_token(state, LEX_SEMICOLON)
     return Assignment(name[1], expr)
@@ -833,7 +895,28 @@ def parse_atom(state: ParsingState[Lexem, Grammar]) -> Expression:
     if (token[0] == LEX_IF):
         return parse_if_stmt(state)
 
-    raise PatternReject(f"Invalid token: {state.peek()}")
+    raise PatternReject(perror_expected(token, 'expression element'))
+
+
+def match_operator(state: ParsingState[Lexem, Grammar], operators: Iterable[str]):
+
+    if not state:
+        return None
+
+    lex = state.rpeek()
+
+    if lex[0] != LEX_OPERATOR:
+        return None
+
+    if lex[1] in operators:
+        state.rpop()
+        return Identifier(lex[1])
+
+    if lex[1] not in state.data.operators:
+        raise ParseError(
+            perror_lex_msg(lex,
+                            f'operator {lex[1]} not defined'))
+
 
 
 def parse_expression_level_unary(state: ParsingState[Lexem, Grammar],
@@ -845,16 +928,16 @@ def parse_expression_level_unary(state: ParsingState[Lexem, Grammar],
 
     prefix_stack = []
 
-    while (m := state.match(*prefix_tokens)) is not None:
-        prefix_stack.append(Identifier(m[1]))
+    while (op := match_operator(state, prefix)) is not None:
+        prefix_stack.append(op)
 
     body = parse_expression_level(state, level - 1)
 
     for prefix_operator in reversed(prefix_stack):
         body = FunctionApplication(prefix_operator, body)
 
-    while (m := state.match(*posfix_tokens)) is not None:
-        body = FunctionApplication(Identifier(m[1]), body)
+    while (op := match_operator(state, posfix)) is not None:
+        body = FunctionApplication(op, body)
 
     return body
 
@@ -873,17 +956,9 @@ def parse_expression_level(state: ParsingState[Lexem, Grammar],
     infix_tokens = [(LEX_OPERATOR, op) for op in infix]
 
 
-    while peek_token(state) == LEX_OPERATOR:
-        operator = state.rpeek()[1]
-
-        if operator in infix:
-            state.rpop()
-            operators.append(Identifier(operator))
-            elements.append(parse_expression_level_unary(state, level))
-        else:
-            if operator not in state.data.operators:
-                raise ParsingError(f'operator {operator} not defined')
-            break
+    while (op := match_operator(state, infix)) is not None:
+        operators.append(op)
+        elements.append(parse_expression_level_unary(state, level))
 
     if associativity:
         res = elements[-1]
@@ -964,7 +1039,7 @@ def builtin_operator(inter: Interpret, grammar: Grammar, name: str, level: int,
 ###############################################################################
 
 
-state = ParsingState(gen_of_file('test.sq'), None)
+state = ParsingState(gen_of_file('test.sq'), None, '\n')
 
 grammar = Grammar(5)
 
@@ -999,14 +1074,21 @@ def op_minus(_: Interpret, a: Value, b: Value) -> int:
     type_check(b, int)
     return a - b
 
+@builtin_operator(inter, grammar, '-', 4, 1, False, fname = 'neg')
+def op_neg(_: Interpret, a: Value) -> int:
+    type_check(a, int)
+    return - a;
+
 
 @builtin_operator(inter, grammar, '=', 0, 2, False)
 def op_eq(_: Interpret, a: Value, b: Value) -> bool:
     return a == b
 
 
-document = parse_document(lex_state)
+try:
+    document = parse_document(lex_state)
+    res = document.interpret(inter)
+    print(res['main'])
+except (ParseError, PatternReject, InterError) as e:
+    print(str(e))
 
-res = document.interpret(inter)
-
-print(res['main'])

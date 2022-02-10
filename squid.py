@@ -1,29 +1,32 @@
+from __future__ import annotations
+from ppretty import ppretty
+
 ###############################################################################
-# TODO 
+# TODO
 ###############################################################################
 """
 
-Syntax: 
-    - let in 
+Syntax:
+    - let in
 
-Operators: 
+Operators:
     - operator definition
-    - unary versus binary - different namespace (different function 
+    - unary versus binary - different namespace (different function
                             definitions)
 
-Evaluation: 
+Evaluation:
     - solving recursion problems, probably using different stack
-    - interpreter error printing 
+    - interpreter error printing
 
-Types: 
+Types:
     - type checking
 
-Sequence: 
+Sequence:
     - sequence interpreting
     - intensional sequences
     - sets
 
-Field: 
+Field:
     - basic definition
 
 """
@@ -32,7 +35,6 @@ Field:
 ###############################################################################
 
 
-from __future__ import annotations
 from typing import (Generator, TypeVar, Tuple, Generic, Optional, Callable,
                     Union, List, Any, Dict, Set, Iterable)
 
@@ -383,6 +385,9 @@ class ScopeStack(Generic[K, V]):
     def __contains__(self, key: K) -> bool:
         return self.lookup(key) is not None
 
+    def __str__(self) -> str:
+        return '\n'.join(str(l) for l in self.stack)
+
 
 class Interpret:
 
@@ -452,33 +457,47 @@ class Location:
 ###############################################################################
 
 
+class Dependency(Generic[T]):
+
+    def __init__(self, stage: int, children: List[AstElement[Any]], data: T, give_amount: Optional[int] = None):
+        self.stage = stage
+        self.children = children
+        self.data = data
+        self.give_amount = give_amount if give_amount != None else len(children)
+
+class CurrentStage(Generic[T]):
+
+    def __init__(self, stage: int, args: List[Value], data: T):
+        self.stage = stage
+        self.args = args
+        self.data = data
+
+Response = Union[T, Dependency[R]]
+
 class SequenceObject:
     pass
 
+F = Callable[[Interpret, CurrentStage], Response[T, None]]
 
 class FunctionObject:
 
-    def __init__(self, f: Callable[..., Value], argument_count: int,
-                 *partial: Value):
+    def __init__(self, f: F[Value],
+                 argument_count: int, *partial: Value):
         super().__init__()
         self.f = f
         self.argument_count = argument_count
-        self.partial = partial
+        self.partial = list(partial)
 
     def copy(self, *partial: Value) -> FunctionObject:
         return FunctionObject(self.f, self.argument_count - len(partial), *partial)
 
-    def apply(self, inter: Interpret, *args: Value) -> Value:
-        if len(args) >= self.argument_count:
-            res = self.f(inter, *self.partial, *args[:self.argument_count])
-            if (isinstance(res, FunctionObject)):
-                return res.apply(inter, *args[self.argument_count:])
-            if len(args) != self.argument_count:
-                raise InterError(
-                    f'Function takes {self.argument_count} but '+
-                    f'received {len(args)}')
-            return res
-        return self.copy(*args)
+    def apply(self, inter: Interpret, stage: CurrentStage[bool]) -> Response[Value, None]:
+        assert len(stage.args) <= self.argument_count
+        if stage.data:
+            return self.f(inter, CurrentStage(stage.stage, stage.args, None))
+        if len(stage.args) == self.argument_count:
+            return self.f(inter, CurrentStage(stage.stage, self.partial + stage.args, None))
+        return self.copy(*stage.args)
 
     def __repr__(self) -> str:
         return f'FunctionObject {self.argument_count}'
@@ -488,8 +507,47 @@ Value = Union[bool, int, float, str, FunctionObject, SequenceObject]
 
 
 ###############################################################################
+# Eval graph
+###############################################################################
+
+
+
+
+def take(a: List[T], count: int) -> List[T]:
+    res = []
+    for _ in range(count):
+        res.append(a.pop())
+    return res
+
+
+def ast_interpret(inter: Interpret, root: AstElement[Any]) -> Any:
+
+    pile : List[Value] = []
+    stack : List[Tuple[int, int, Any, AstElement[Any]]] = [(0, 0, None, root)]
+
+    while stack:
+
+        stage, arg_count, data, element = stack.pop()
+        stage = CurrentStage(stage, take(pile, arg_count), data)
+        response = element.inter_step(inter, stage)
+
+        if isinstance(response, Dependency):
+            stack.append((response.stage, response.give_amount, response.data, element))
+            for child in response.children:
+                stack.append((0, 0, None, child))
+        else:
+            pile.append(response)
+
+    assert len(pile) == 1
+    return pile[0]
+
+
+
+
+###############################################################################
 # Ast
 ###############################################################################
+
 
 
 class AstElement(Generic[T]):
@@ -504,6 +562,10 @@ class AstElement(Generic[T]):
         ...
 
     def get_free_names(self) -> Set[str]:
+        ...
+
+    def inter_step(self, inter: Interpret, stage: CurrentStage[None]) \
+            -> Response[Value]:
         ...
 
 
@@ -523,6 +585,10 @@ class Constant(AstElement[Value]):
 
     def get_free_names(self) -> Set[str]:
         return set()
+
+    def inter_step(self, inter: Interpret, stage: CurrentStage[None]) \
+            -> Response[Value]:
+        return self.value
 
 
 class Identifier(AstElement[Value]):
@@ -544,6 +610,13 @@ class Identifier(AstElement[Value]):
     def get_free_names(self) -> Set[str]:
         return set([self.name])
 
+    def inter_step(self, inter: Interpret, stage: CurrentStage[None]) \
+            -> Response[Value]:
+        val = inter.sstack.lookup(self.name)
+        if val is None:
+            raise self.inter_error(f"'{self.name}' not defined")
+        return val
+
 
 class FunctionApplication(AstElement[Value]):
 
@@ -552,28 +625,52 @@ class FunctionApplication(AstElement[Value]):
                  *arguments: Expression):
         super().__init__()
         self.fun = fun
-        self.arguments = arguments
+        self.arguments = list(arguments)
 
     def __str__(self) -> str:
         return (f"({str(self.fun)})" +
                 ''.join(f" ({str(a)})" for a in self.arguments))
-
-    def interpret(self, inter: Interpret) -> Value:
-        fun_val = self.fun.interpret(inter)
-
-        if not isinstance(fun_val, FunctionObject):
-            raise self.inter_error('value is not a function')
-        try:
-            return fun_val.apply(inter,
-                                 *[a.interpret(inter) for a in self.arguments])
-        except InterError as e:
-            raise self.inter_error(str(e))
 
     def get_free_names(self) -> Set[str]:
         res = self.fun.get_free_names()
         for arg in self.arguments:
             res.update(arg.get_free_names())
         return res
+
+    def inter_step(self, inter: Interpret, stage: CurrentStage[Any]) \
+            -> Response[Value, Any]:
+
+        if stage.stage == 0:
+            return Dependency(1, [self.fun], None)
+
+        if stage.stage == 1:
+            fun_val = stage.args[0]
+
+            # TODO: this should be type error
+            if not isinstance(fun_val, FunctionObject):
+                raise self.inter_error(f'value {fun_val} is not a function')
+
+            argument_count = min(len(self.arguments), fun_val.argument_count)
+            return Dependency(2, self.arguments, (0, fun_val, len(self.arguments), False), argument_count)
+
+        if stage.stage == 2:
+
+            assert (stage.data is not None)
+
+            fun_stage, fun_val, reminder, force = stage.data
+            response = fun_val.apply(inter, CurrentStage(fun_stage, stage.args, force))
+
+            if isinstance(response, Dependency):
+                return Dependency(
+                    2, response.children, (response.stage, fun_val, reminder, True))
+
+            if isinstance(response, FunctionObject) and reminder == 0:
+                argument_delta = min(reminder, response.argument_count)
+                return Dependency(2, [], (0, response, argument_delta, False), argument_delta)
+
+            return response
+
+        assert False
 
 
 def list_of_opt(opt: Optional[T]) -> List[T]:
@@ -601,7 +698,7 @@ class FunctionDefinition(AstElement[FunctionObject]):
                 + f' {CHR_FUN_DELIM} '
                 + str(self.expr))
 
-    def interpret(self, inter: Interpret) -> FunctionObject:
+    def inter_step(self, inter: Interpret, stage: CurrentStage) -> Response[FunctionObject, None]:
 
         closure : Dict[str, Binding[Value]] = {}
 
@@ -611,26 +708,28 @@ class FunctionDefinition(AstElement[FunctionObject]):
                 raise self.inter_error(f"value '{name}' not defined")
             closure[name] = value
 
-        def f(inter: Interpret, *args: Value) -> Value:
+        def f(inter: Interpret, stage: CurrentStage[None]) -> Response[Value, None]:
 
-            inter.sstack.add_scope()
+            if stage.stage == 0:
 
-            for name, value in closure.items():
-                inter.sstack.put_on_last_future(name, value)
+                inter.sstack.add_scope()
+                for name, value in closure.items():
+                    inter.sstack.put_on_last_future(name, value)
 
-            inter.sstack.add_scope()
+                inter.sstack.add_scope()
+                for name, arg in zip(self.formal_arguments, stage.args):
+                    inter.sstack.put_on_last(name, arg)
 
-            for name, arg in zip(self.formal_arguments, args):
-                inter.sstack.put_on_last(name, arg)
+                return Dependency(1, [self.expr], None)
 
-            try:
-                res = self.expr.interpret(inter)
-                return res
-            except InterError:
-                raise
-            finally:
+            if stage.stage == 1:
+
                 inter.sstack.pop_scope()
                 inter.sstack.pop_scope()
+
+                return stage.args[0]
+
+            assert False
 
         return FunctionObject(f, len(self.formal_arguments))
 
@@ -681,6 +780,21 @@ class IfStmt(AstElement[Value]):
         res.update(self.branch_false.get_free_names())
         return res
 
+    def inter_step(self, inter: Interpret, stage: CurrentStage[None]) \
+        -> Response[Value]:
+
+        if stage.stage == 0:
+            return Dependency(1, [self.cond], None)
+        if stage.stage == 1:
+            cond = stage.args[0]
+            return Dependency(2,
+                              [self.branch_true if cond else self.branch_false],
+                              None)
+        if stage.stage == 2:
+            return stage.args[0]
+
+        assert False
+
 
 Atom = Union[FunctionApplication,
              Constant,
@@ -707,7 +821,7 @@ class Assignment(AstElement[Tuple[str, Value]]):
 
         binding : FutureBinding[Value] = FutureBinding()
         inter.sstack.put_on_last_future(self.name, binding)
-        value = self.expr.interpret(inter)
+        value = ast_interpret(inter, self.expr)
         binding.value = value
         inter.sstack.put_on_last(self.name, value)
         return self.name, value
@@ -1014,10 +1128,19 @@ def define_builtin(inter: Interpret, name: str, val: Value) -> None:
     inter.sstack.put(name, val)
 
 
+def stage_function(fun: Callable[..., Value]) -> F[Value]:
+    def stage_function_w(inter: Interpret, stage: CurrentStage) -> Value:
+        return fun(inter, *stage.args)
+    return stage_function_w
+
+
 def builtin_function(inter: Interpret, name: str, argument_count: int) \
         -> Callable[[Callable[..., Value]], Callable[..., Value]]:
     def builtin_function_d(fun: Callable[..., Value]) -> Callable[..., Value]:
-        define_builtin(inter, name, FunctionObject(fun, argument_count))
+        define_builtin(
+            inter,
+            name,
+            FunctionObject(stage_function(fun), argument_count))
         return fun
     return builtin_function_d
 
@@ -1028,7 +1151,10 @@ def builtin_operator(inter: Interpret, grammar: Grammar, name: str, level: int,
     assert arity in {1, 2}
 
     def builtin_function_d(fun: Callable[..., Value]) -> Callable[..., Value]:
-        define_builtin(inter, name, FunctionObject(fun, arity))
+        define_builtin(
+            inter,
+            name,
+            FunctionObject(stage_function(fun), arity))
         grammar.add_operator(name, level, arity, associativity)
         return fun
     return builtin_function_d
@@ -1073,11 +1199,6 @@ def op_minus(_: Interpret, a: Value, b: Value) -> int:
     type_check(a, int)
     type_check(b, int)
     return a - b
-
-@builtin_operator(inter, grammar, '-', 4, 1, False, fname = 'neg')
-def op_neg(_: Interpret, a: Value) -> int:
-    type_check(a, int)
-    return - a;
 
 
 @builtin_operator(inter, grammar, '=', 0, 2, False)

@@ -128,7 +128,7 @@ LEX_SEMICOLON, CHR_SEMICOLON = define_triv_case(';')
 
 LEX_OPERATOR = define_lex('operator')
 CHR_OPERATOR = set((':', '+', '-', '*', '/', '%',
-                    '<', '>', '=', '$', '|', '&', '!'))
+                    '<', '>', '=', '$', '|', '&', '!', '.'))
 
 LEX_LIT_INT = define_lex('int literal')
 LEX_LIT_DOUBLE = define_lex('double literal')
@@ -138,6 +138,10 @@ LEX_IDENTIFIER = define_lex('identifier')
 
 LEX_PROD, CHR_PROD = define_keyword('=>')
 LEX_FUN, CHR_FUN = define_keyword('fun')
+
+LEX_OPBINL, CHR_OPBINL = define_keyword('opbinl')
+LEX_OPBINR, CHR_OPBINR = define_keyword('opbinr')
+
 LEX_FUN_DELIM, CHR_FUN_DELIM = define_keyword('->')
 LEX_ASSIGN, CHR_ASSIGN = define_keyword(':=')
 LEX_LCEOP_OSTART, CHR_LCEOP_OSTART = define_keyword('>>')
@@ -515,6 +519,7 @@ class Grammar:
             self.operator_table.append((True, [], [], []))
 
         self.operators: Set[str] = set()
+        self.operator_levels = operator_levels
 
     def add_operator(self, name: str, level: int, arity: int,
                      associativity: int):
@@ -898,9 +903,30 @@ def parse_document(state: ParsingState[Lexem, Grammar]) -> Document:
     location = cur_location(state)
     res: List[Assignment] = []
     while state and state.peek()[0] != LEX_EOF:
-        res.append(parse_assignment(state))
+        if peek_token(state) in {LEX_OPBINL, LEX_OPBINR}:
+            res.append(parse_operator_definition(state))
+        else:
+            res.append(parse_assignment(state))
     req_token(state, LEX_EOF)
     return Document(location, *res)
+
+
+def parse_operator_definition(state: ParsingState[Lexem, Grammar]) -> Assignment:
+    location = cur_location(state)
+    op_def = req_token(state, LEX_OPBINL, LEX_OPBINR)
+    operator = req_token(state, LEX_OPERATOR)
+    level = req_token(state, LEX_LIT_INT)
+    function = parse_expression(state)
+    req_token(state, LEX_SEMICOLON);
+
+    level_int = int(level[1])
+
+    if level_int < 0 or level_int >= state.data.operator_levels:
+        raise parsing_error(location, f'operator level out of bounds {level_int}')
+
+    state.data.add_operator(operator[1], level_int, 2, op_def[0] == LEX_OPBINR)
+
+    return Assignment(location, operator[1], function)
 
 
 def parse_assignment(state: ParsingState[Lexem, Grammar]) -> Assignment:

@@ -12,7 +12,6 @@ Syntax:
     - let in
 
 Operators:
-    - operator definition
     - unary versus binary - different namespace (different function
                             definitions)
 
@@ -139,6 +138,8 @@ LEX_IDENTIFIER = define_lex('identifier')
 LEX_PROD, CHR_PROD = define_keyword('=>')
 LEX_FUN, CHR_FUN = define_keyword('fun')
 LEX_OBJ, CHR_OBJ = define_keyword('obj')
+LEX_LET, CHR_LET = define_keyword('let')
+LEX_IN, CHR_IN = define_keyword('in')
 
 LEX_OPBINL, CHR_OPBINL = define_keyword('opbinl')
 LEX_OPBINR, CHR_OPBINR = define_keyword('opbinr')
@@ -894,12 +895,39 @@ class IfStmt(AstElement[Value]):
         assert False
 
 
+class LetIn(AstElement[Value]):
+
+    def __init__(self, location: Location, assignment: Assignment,
+                 body: Expression):
+        super().__init__(location)
+        self.assignment = assignment
+        self.body = body
+
+    def __str__(self) -> str:
+        return f'{CHR_LET} {str(self.assignment)} {CHR_IN} {str(self.body)}'
+
+    def inter_step(self, inter: Interpret, stage: CurrentStage[None]) \
+        -> Response[Value]:
+
+        if stage.stage == 0:
+            inter.sstack.add_scope()
+            self.assignment.interpret(inter)
+            return Dependency(1, [self.body], None)
+
+        if stage.stage == 1:
+            inter.sstack.pop_scope()
+            return stage.args[0]
+
+        assert False
+
+
 Atom = Union[FunctionApplication,
              Constant,
              FunctionDefinition,
              SequenceDefinition,
              Identifier,
-             IfStmt]
+             IfStmt,
+             LetIn]
 
 
 Expression = Atom
@@ -1024,6 +1052,7 @@ def parse_document(state: ParsingState[Lexem, Grammar]) -> Document:
             else:
                 names[assignment.name] = assignment.expr
                 res.append(assignment)
+        req_token(state, LEX_SEMICOLON)
     req_token(state, LEX_EOF)
     return Document(location, *res)
 
@@ -1034,7 +1063,6 @@ def parse_operator_definition(state: ParsingState[Lexem, Grammar]) -> Assignment
     operator = req_token(state, LEX_OPERATOR)
     level = req_token(state, LEX_LIT_INT)
     function = parse_expression(state)
-    req_token(state, LEX_SEMICOLON);
 
     level_int = int(level[1])
 
@@ -1051,9 +1079,15 @@ def parse_assignment(state: ParsingState[Lexem, Grammar]) -> Assignment:
     name = req_token(state, LEX_IDENTIFIER)
     req_token(state, LEX_ASSIGN)
     expr = parse_expression(state)
-    req_token(state, LEX_SEMICOLON)
     return Assignment(location, name[1], expr)
 
+def parse_letin(state: ParsingState[Lexem, Grammar]) -> LetIn:
+    location = cur_location(state)
+    req_token(state, LEX_LET)
+    assignment = parse_assignment(state)
+    req_token(state, LEX_IN)
+    body = parse_expression(state)
+    return LetIn(location, assignment, body)
 
 def parse_arguments(state: ParsingState[Lexem, Grammar]) -> List[Atom]:
     arguments: List[Expression] = []
@@ -1245,6 +1279,8 @@ def parse_atom(state: ParsingState[Lexem, Grammar]) -> Expression:
         expr = parse_expression(state)
         req_token(state, LEX_RPARE)
         return expr
+    if (token[0] == LEX_LET):
+        return parse_letin(state)
     if (token[0] in LITERALS):
         return parse_literal(state)
     if (token[0] == LEX_FUN):

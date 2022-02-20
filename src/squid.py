@@ -1123,8 +1123,10 @@ def parse_pattern(state: ParsingState[Lexem, Any]) -> Pattern:
 
     if token_is_next(state, LEX_IDENTIFIER):
         return parse_identifier(state)
-    if token_is_next(state, LEX_LPARE):
-        req_token(state, LEX_LPARE)
+
+    next_token = state.peek()
+    if  (next_token[0], next_token[1]) == (LEX_OPERATOR, '<'):
+        state.pop()
         name = parse_identifier(state).name
         subpatterns = []
         while True:
@@ -1132,7 +1134,7 @@ def parse_pattern(state: ParsingState[Lexem, Any]) -> Pattern:
                 subpatterns.append(parse_pattern(state))
             except PatternReject:
                 break
-        req_token(state, LEX_RPARE)
+        state.req_pred(lambda x: (x[0], x[1]) == (LEX_OPERATOR, '>'))
         return CompPattern(location, name, subpatterns)
 
     raise PatternReject(f'token {str_of_lexid(peek_token(state))} is not a match')
@@ -1410,7 +1412,7 @@ def builtin_operator(inter: Interpret, grammar: Grammar, name: str, level: int,
 # Application
 ###############################################################################
 
-grammar = Grammar(5)
+grammar = Grammar(10)
 
 inter = Interpret()
 inter.sstack.add_scope()
@@ -1449,7 +1451,7 @@ def load_document(filename: str) -> Document:
 
 try:
     res = dict()
-    # res.update(load_document('../sandbox/prelude.sq').interpret(inter))
+    res.update(load_document('../sandbox/prelude.sq').interpret(inter))
     document = load_document('../sandbox/test.sq')
     res.update(document.interpret(inter))
     print(res['main'])

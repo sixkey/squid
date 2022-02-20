@@ -1165,7 +1165,7 @@ def builtin_operator(inter: Interpret, grammar: Grammar, name: str, level: int,
 ###############################################################################
 
 
-state = ParsingState(gen_of_file('test.sq'), None, '\n')
+state = ParsingState(gen_of_file('sandbox/test.sq'), None, '\n')
 
 grammar = Grammar(5)
 

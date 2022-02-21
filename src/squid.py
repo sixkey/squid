@@ -9,7 +9,8 @@ from ppretty import ppretty
 """
 
 Syntax:
-    - let in
+    - (operator) - ifentifier
+    - coma - generate tuples
 
 Operators:
     - unary versus binary - different namespace (different function
@@ -28,6 +29,9 @@ Sequence:
 
 Field:
     - basic definition
+
+IO:
+    - definition of IO
 
 """
 ###############################################################################
@@ -127,7 +131,7 @@ LEX_SEMICOLON, CHR_SEMICOLON = define_triv_case(';')
 
 LEX_OPERATOR = define_lex('operator')
 CHR_OPERATOR = set((':', '+', '-', '*', '/', '%',
-                    '<', '>', '=', '$', '|', '&', '!', '.'))
+                    '<', '>', '=', '$', '|', '&', '!', '.', '^'))
 
 LEX_LIT_INT = define_lex('int literal')
 LEX_LIT_DOUBLE = define_lex('double literal')
@@ -177,7 +181,7 @@ def lexer(state: ParsingState[str, None]) -> Gen[Lexem]:
             lexem = lexer_string(state)
         elif character.isdigit():
             lexem = lex_number(state)
-        elif character.isalpha():
+        elif identifier_start(character):
             lexem = lex_identifier(state)
         elif character in CHR_OPERATOR:
             lexem = lex_operator(state)
@@ -239,10 +243,18 @@ def lex_operator(state: ParsingState[str, None]) -> LexemCore:
         return LEX_OPERATOR, buffer
 
 
+def identifier_start(c: str) -> bool:
+    return c.isalpha() or c == '_'
+
+def identifier_char(c: str) -> bool:
+    return c.isalnum() or c == '_' or c == "'"
+
 def lex_identifier(state: ParsingState[str, None]) -> LexemCore:
-    buffer = state.req_pred(lambda x: x.isalpha())
-    while state and state.rpeek().isalnum() or state.rpeek() == '_':
+    buffer = state.req_pred(identifier_start)
+
+    while state and identifier_char(state.rpeek()):
         buffer += state.rpop()
+
     if buffer in KEYWORDS:
         return KEYWORDS[buffer], buffer
     else:
@@ -702,10 +714,10 @@ class FunctionApplication(AstElement[Value]):
 
 class Constructor(AstElement[ObjectObject]):
 
-    def __init__(self, location: Location, name: Identifier,
+    def __init__(self, location: Location, name: str,
                  arguments: List[Expression]):
         super().__init__(location)
-        self.name = name.name
+        self.name = name
         self.arguments = arguments
 
     def get_free_names(self) -> Set[str]:
@@ -758,6 +770,7 @@ class FunctionOption(AstElement[FunctionObject]):
 
     def get_free_names(self) -> Set[str]:
         names = self.expr.get_free_names()
+        assert names is not None
         remove = set(list_of_opt(self.producing))
         for pattern in self.formal_arguments:
             remove.update(pattern_get_free_names(pattern))
@@ -897,28 +910,41 @@ class IfStmt(AstElement[Value]):
 
 class LetIn(AstElement[Value]):
 
-    def __init__(self, location: Location, assignment: Assignment,
+    def __init__(self, location: Location, pattern: Pattern,
+                 expression: Expression,
                  body: Expression):
         super().__init__(location)
-        self.assignment = assignment
+        self.pattern = pattern
+        self.expression = expression
         self.body = body
 
     def __str__(self) -> str:
-        return f'{CHR_LET} {str(self.assignment)} {CHR_IN} {str(self.body)}'
+        return ( f'{CHR_LET} {str(self.pattern)} {CHR_ASSIGN} '
+               + f'{str(self.expression)} {CHR_IN} {str(self.body)}' )
 
     def inter_step(self, inter: Interpret, stage: CurrentStage[None]) \
         -> Response[Value]:
 
         if stage.stage == 0:
-            inter.sstack.add_scope()
-            self.assignment.interpret(inter)
-            return Dependency(1, [self.body], None)
+            return Dependency(1, [self.expression], None)
 
         if stage.stage == 1:
+
+            assignments = {};
+            pattern_match(self.pattern, stage.args[0], assignments)
+            inter.sstack.add_scope()
+            for key, value in assignments.items():
+                inter.sstack.put_on_last(key, value);
+            return Dependency(2, [self.body], None)
+
+        if stage.stage == 2:
             inter.sstack.pop_scope()
             return stage.args[0]
 
         assert False
+
+    def get_free_names(self) -> Set[str]:
+        return self.expression.get_free_names() - self.pattern.get_free_names();
 
 
 Atom = Union[FunctionApplication,
@@ -927,7 +953,8 @@ Atom = Union[FunctionApplication,
              SequenceDefinition,
              Identifier,
              IfStmt,
-             LetIn]
+             LetIn,
+             Constructor]
 
 
 Expression = Atom
@@ -1018,6 +1045,16 @@ def req_token(state: ParsingState[Lexem, Any], *lex_id: int) -> Lexem:
             perror_expected(head, *(str_of_lexid(i) for i in lex_id)))
     return head
 
+def req_wholetoken(state: ParsingState[Lexem, Any], *lex: Tuple[int, str]) -> Lexem:
+    head = None
+    head = state.rpop()
+
+    if (head[0], head[1]) not in lex:
+        raise ParseError(
+            perror_expected(head, *(f'{str_of_lexid(l[0])} {l[1]}'  for l in lex)))
+    return head
+
+
 def peek_token(state: ParsingState[Lexem, Any]) -> Optional[int]:
     lexem = state.peek()
     if lexem is None:
@@ -1084,10 +1121,13 @@ def parse_assignment(state: ParsingState[Lexem, Grammar]) -> Assignment:
 def parse_letin(state: ParsingState[Lexem, Grammar]) -> LetIn:
     location = cur_location(state)
     req_token(state, LEX_LET)
-    assignment = parse_assignment(state)
+
+    pattern = parse_pattern(state)
+    req_token(state, LEX_ASSIGN)
+    expression = parse_expression(state)
     req_token(state, LEX_IN)
     body = parse_expression(state)
-    return LetIn(location, assignment, body)
+    return LetIn(location, pattern, expression, body)
 
 def parse_arguments(state: ParsingState[Lexem, Grammar]) -> List[Atom]:
     arguments: List[Expression] = []
@@ -1125,7 +1165,7 @@ class CompPattern(AstElement):
 class PatternNotMatched(BaseException):
     pass
 
-Pattern = Union[CompPattern, Identifier]
+Pattern = Union[CompPattern, Identifier, Constant]
 
 def pattern_get_free_names(pattern: Pattern) -> Set[str]:
     if isinstance(pattern, Identifier):
@@ -1138,12 +1178,20 @@ def pattern_match(pattern: Pattern, value: Value, res: Dict[str, Value]) -> bool
     if isinstance(pattern, Identifier):
         res[pattern.name] = value
         return True
+    if isinstance(pattern, Constant):
+        if value != pattern.value:
+            raise pattern.inter_error(
+                f"object {value} is not a '{pattern}'", PatternNotMatched)
+        return True
 
     if not isinstance(value, ObjectObject):
-        raise pattern.inter_error(f"object {value} is not a '{pattern.name}'", PatternNotMatched)
+        raise pattern.inter_error(
+            f"object {value} is not a '{pattern.name}'", PatternNotMatched)
+
 
     if value.name != pattern.name or len(value.values) != len(pattern.subpatterns):
-        raise pattern.inter_error(f"object {value} is not a '{pattern.name}'", PatternNotMatched)
+        raise pattern.inter_error(
+            f"object {value} is not a '{pattern.name}'", PatternNotMatched)
 
     for subpattern, value_part in zip(pattern.subpatterns, value.values):
         if not pattern_match(subpattern, value_part, res):
@@ -1151,13 +1199,17 @@ def pattern_match(pattern: Pattern, value: Value, res: Dict[str, Value]) -> bool
 
     return True
 
-def parse_pattern(state: ParsingState[Lexem, Any]) -> Pattern:
-
+def parse_pattern_atom(state: ParsingState[Lexem, Any]) -> Pattern:
     location = cur_location(state)
+    if match_token(state, LEX_LPARE):
+        res = parse_pattern(state)
+        req_token(state, LEX_RPARE)
+        return res
 
     if token_is_next(state, LEX_IDENTIFIER):
         return parse_identifier(state)
-
+    if state.rpeek()[0] in LITERALS:
+        return parse_literal(state)
     next_token = state.peek()
     if  (next_token[0], next_token[1]) == (LEX_OPERATOR, '<'):
         state.pop()
@@ -1165,13 +1217,28 @@ def parse_pattern(state: ParsingState[Lexem, Any]) -> Pattern:
         subpatterns = []
         while True:
             try:
-                subpatterns.append(parse_pattern(state))
+                subpatterns.append(parse_pattern_atom(state))
             except PatternReject:
                 break
-        state.req_pred(lambda x: (x[0], x[1]) == (LEX_OPERATOR, '>'))
+        req_wholetoken(state, (LEX_OPERATOR, '>'))
         return CompPattern(location, name, subpatterns)
 
     raise PatternReject(f'token {str_of_lexid(peek_token(state))} is not a match')
+
+def parse_pattern(state: ParsingState[Lexem, Any]) -> Pattern:
+
+    location = cur_location(state)
+    units = [parse_pattern_atom(state)]
+
+    while match_token(state, LEX_COMMA):
+        units.append(parse_pattern_atom(state))
+
+    if len(units) == 1:
+        return units[0]
+
+    return CompPattern(location, 'Tuple', units)
+
+
 
 
 def parse_function_definition(state: ParsingState[Lexem, Grammar]) \
@@ -1252,7 +1319,7 @@ def parse_obj_definition(state: ParsingState[Lexem, Grammar]) -> Constructor:
     location = cur_location(state)
 
     req_token(state, LEX_OBJ)
-    name = parse_identifier(state)
+    name = parse_identifier(state).name
     args = parse_arguments(state)
 
     return Constructor(location, name, args)
@@ -1372,8 +1439,24 @@ def parse_expression_level(state: ParsingState[Lexem, Grammar],
 
     return res
 
-
 def parse_expression(state: ParsingState[Lexem, Grammar]) -> Expression:
+    return parse_tuple(state)
+
+def parse_tuple(state: ParsingState[Lexem, Grammar]) -> Expression:
+
+    location = cur_location(state)
+    units = [parse_expression_unit(state)]
+
+    while match_token(state, LEX_COMMA):
+        units.append(parse_expression_unit(state))
+
+    if len(units) == 1:
+        return units[0]
+
+    return Constructor(location, 'Tuple', units)
+
+
+def parse_expression_unit(state: ParsingState[Lexem, Grammar]) -> Expression:
 
     root_level = len(state.data.operator_table)
 
@@ -1468,6 +1551,26 @@ def op_mul(_: Interpret, a: Value, b: Value) -> int:
     type_check(b, int)
     return a * b
 
+
+@builtin_operator(inter, grammar, '^', 3, 2, False)
+def op_mul(_: Interpret, a: Value, b: Value) -> int:
+    type_check(a, int)
+    type_check(b, int)
+    return a ** b
+
+
+@builtin_operator(inter, grammar, '/', 3, 2, False)
+def op_mul(_: Interpret, a: Value, b: Value) -> int:
+    type_check(a, int)
+    type_check(b, int)
+    return a // b
+
+
+@builtin_operator(inter, grammar, '%', 3, 2, False)
+def op_mul(_: Interpret, a: Value, b: Value) -> int:
+    type_check(a, int)
+    type_check(b, int)
+    return a % b
 
 @builtin_operator(inter, grammar, '-', 3, 2, False)
 def op_minus(_: Interpret, a: Value, b: Value) -> int:

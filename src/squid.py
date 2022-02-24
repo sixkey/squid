@@ -461,6 +461,15 @@ Response = Union[T, Dependency[R]]
 class SequenceObject:
     pass
 
+class FieldObject(Generic[T]):
+
+    def __init__(self, size: int, def_value: T):
+        self.field = [def_value] * size;
+
+    def __str__(self) -> str:
+        return 'Field {' + ', '.join(str(e) for e in self.field) + '}'
+
+
 F = Callable[[Interpret, CurrentStage], Response[T, None]]
 
 class TypeConstructor:
@@ -543,7 +552,8 @@ class AstSequenceObjectIterator(SequenceObject):
             return lower
 
 Value = Union[bool, int, float, str, FunctionObject, SequenceObject,
-              ObjectObject, AstSequenceObject, AstSequenceObjectIterator]
+              ObjectObject, AstSequenceObject, AstSequenceObjectIterator,
+              FieldObject]
 
 ###############################################################################
 # Evaluation
@@ -691,6 +701,9 @@ class Identifier(AstElement[Value]):
             raise self.inter_error(f"'{self.name}' not defined")
         return val
 
+def reverse(l: List[T]) -> List[T]:
+    return list(reversed(l))
+
 
 class FunctionApplication(AstElement[Value]):
 
@@ -725,14 +738,15 @@ class FunctionApplication(AstElement[Value]):
                 raise self.inter_error(f'value {fun_val} is not a function')
 
             argument_count = min(len(self.arguments), fun_val.argument_count)
-            return Dependency(2, self.arguments, (0, fun_val, len(self.arguments), False), argument_count)
+            return Dependency(2, reverse(self.arguments), (0, fun_val, len(self.arguments), False), argument_count)
 
         if stage.stage == 2:
 
             assert (stage.data is not None)
 
             fun_stage, fun_val, reminder, force = stage.data
-            response = fun_val.apply(inter, CurrentStage(fun_stage, stage.args, force))
+
+            response = fun_val.apply(inter, CurrentStage(fun_stage, reverse(stage.args), force))
 
             if isinstance(response, Dependency):
                 return Dependency(
@@ -773,11 +787,11 @@ class Constructor(AstElement[ObjectObject]):
             -> Response[Value, Any]:
 
         if stage.stage == 0:
-            return Dependency(1, self.arguments, None)
+            return Dependency(1, reverse(self.arguments), None)
 
         if stage.stage == 1:
             values = stage.args
-            return ObjectObject(self.name, values)
+            return ObjectObject(self.name, reverse(values))
 
         assert False
 
@@ -895,6 +909,7 @@ class FunctionDefinition(AstElement[FunctionObject]):
 
 
 Bottom = ObjectObject('Bottom', []);
+Unit = ObjectObject('Unit', []);
 
 class CaptureExpression:
 
@@ -1068,18 +1083,40 @@ class Assignment(AstElement[Tuple[str, Value]]):
 
 class Document(AstElement[Dict[str, Value]]):
 
-    def __init__(self, location: Location, *assignments: Assignment) -> None:
+    def __init__(self, location: Location) -> None:
         super().__init__(location)
-        self.assignments = assignments
+        self.names : Dict[str, Assignment] = {}
+        self.assignments : List[Assignment] = []
 
     def __str__(self) -> str:
         return '\n'.join(str(a) for a in self.assignments)
 
+    def add_definition(self, assignment: Assignment) -> None:
+        name = assignment.name
+        location = assignment.location
+
+        if name in self.names:
+            old_value = self.names[name]
+            if (isinstance(old_value.expr, FunctionDefinition)
+                    and isinstance(assignment.expr, FunctionDefinition)):
+                if not old_value.expr.inflate(assignment.expr):
+                    raise parsing_error(location, "the arities don't match")
+            else:
+                raise parsing_error(location, f'redefinition of {name}')
+        else:
+            self.names[name] = assignment
+            self.assignments.append(assignment)
+
+    def __iadd__(self, other: Document) -> Document:
+        for assignment in other.assignments:
+            self.add_definition(assignment)
+        return self
+
     def interpret(self, inter: Interpret) -> Dict[str, Value]:
-        res: Dict[str, Value] = {}
+        res = {}
         for assignment in self.assignments:
-            key, value = assignment.interpret(inter)
-            res[key] = value
+            name, value = assignment.interpret(inter)
+            res[name] = value
         return res
 
     def get_free_names(self) -> Set[str]:
@@ -1150,32 +1187,27 @@ def cur_location(state: ParsingState[Lexem, Grammar]) -> Location:
     return state.rpeek()[2]
 
 def parse_document(state: ParsingState[Lexem, Grammar]) -> Document:
+
     location = cur_location(state)
     res: List[Assignment] = []
 
     names: Dict[str, AstElement] = {}
 
+    document = Document(location)
+
     while state and state.peek()[0] != LEX_EOF:
         if peek_token(state) in {LEX_OPBINL, LEX_OPBINR}:
-            res.append(parse_operator_definition(state))
+            assignment = parse_operator_definition(state)
         else:
             assignment = parse_assignment(state)
-            name = assignment.name
 
-            if assignment.name in names:
-                old_value = names[name]
-                if (isinstance(old_value, FunctionDefinition)
-                        and isinstance(assignment.expr, FunctionDefinition)):
-                    if not old_value.inflate(assignment.expr):
-                        raise parsing_error(assignment.location, "the arities don't match")
-                else:
-                    raise parsing_error(assignment.location, 'redefinition of {name}')
-            else:
-                names[assignment.name] = assignment.expr
-                res.append(assignment)
+        document.add_definition(assignment)
+
         req_token(state, LEX_SEMICOLON)
+
     req_token(state, LEX_EOF)
-    return Document(location, *res)
+
+    return document
 
 
 def parse_operator_definition(state: ParsingState[Lexem, Grammar]) -> Assignment:
@@ -1256,7 +1288,9 @@ def pattern_get_free_names(pattern: Pattern) -> Set[str]:
         return set(pattern.name)
     if isinstance(pattern, CompPattern):
         return set.union(set(), *(pattern_get_free_names(p) for p in pattern.subpatterns))
-    assert False
+    if isinstance(pattern, Constant):
+        return set()
+    assert False, type(pattern)
 
 def pattern_match(pattern: Pattern, value: Value, res: Dict[str, Value]) -> bool:
     if isinstance(pattern, Identifier):
@@ -1634,13 +1668,26 @@ def type_check(a: Value, b) -> None:
     if not isinstance(a, b):
         raise TypeError(f'{a} is not of type {b}')
 
+@builtin_function(inter, 'field', 2)
+def f_field(_: Interpret, a: int, b: Value) -> FieldObject[Value]:
+    type_check(a, int)
+    return FieldObject(a, b)
+
+@builtin_function(inter, 'set', 3)
+def f_set(_: Interpret, a: FieldObject[Value], b: int, c: Value) -> Value:
+    a.field[b] = c
+    return a
+
+@builtin_function(inter, 'get', 2)
+def f_set(_: Interpret, a: FieldObject[Value], b: int) -> Value:
+    return a.field[b]
 
 @builtin_function(inter, 'show', 1)
 def f_show(_: Interpret, a: Value) -> str:
     return str(a)
 
 @builtin_function(inter, 'print', 1)
-def f_show(_: Interpret, a: Value) -> Value:
+def f_print(_: Interpret, a: Value) -> Value:
     print(str(a))
     return a
 
@@ -1649,7 +1696,7 @@ def f_iter(_: Interpret, a: Value) -> Value:
     assert isinstance(a, AstSequenceObject)
     return AstSequenceObjectIterator(a)
 
-@builtin_function_staged(inter, 'next', 1)
+@builtin_function_staged(inter, '_next', 1)
 def f_next(inter: Interpret, stage: CurrentStage) \
     -> Response[Value, Optional[Tuple[AstSequenceObjectIterator, int]]]:
 
@@ -1725,12 +1772,17 @@ try:
 
     res = dict()
 
+    doc = Document((0, 0))
+
     if not arguments.raw:
-        res.update(load_document('../sandbox/prelude.sq').interpret(inter))
+        doc += load_document('../sandbox/prolog.sq')
 
     for path in arguments.source_files:
-        document = load_document(path)
-        res.update(document.interpret(inter))
+        doc += load_document(path)
+
+    doc += load_document('../sandbox/epilog.sq')
+
+    res = doc.interpret(inter)
 
     if 'main' not in res:
         raise InterError('main not found')

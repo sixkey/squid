@@ -478,7 +478,7 @@ class TypeConstructor:
 
 class FunctionObject:
 
-    def __init__(self, f: F[Value],
+    def __init__(self, f: F[Response[Value, None]],
                  argument_count: int, *partial: Value):
         super().__init__()
         self.f = f
@@ -510,8 +510,42 @@ class ObjectObject:
         return self.name + ''.join(' ' + str(v) for v in self.values)
 
 
+class AstSequenceObject(SequenceObject):
+
+    def __init__(self, elements: List[CaptureExpression]):
+        self.elements = elements
+        self.pointer = 0;
+
+class AstSequenceObjectIterator(SequenceObject):
+
+    def __init__(self, sequence_object: AstSequenceObject):
+        self.sequence_object = sequence_object
+        self.pointer = 0
+
+    def inter_step(self, inter: Interpret, stage: CurrentStage):
+        if stage.stage == 0:
+            if self.pointer >= len(self.sequence_object.elements):
+                return Bottom
+            lower = self.sequence_object.elements[self.pointer].inter_step(
+                inter, CurrentStage(0, [], None))
+
+        elif stage.stage == 1:
+            assert (stage.data != None)
+            seq_stage = stage.data
+            lower = self.sequence_object.elements[self.pointer].inter_step(
+                inter, CurrentStage(seq_stage, stage.args, None))
+        else:
+            assert False
+
+        if isinstance(lower, Dependency):
+            dep = Dependency(1, lower.children, lower.stage)
+            return dep
+        else:
+            self.pointer += 1
+            return lower
+
 Value = Union[bool, int, float, str, FunctionObject, SequenceObject,
-              ObjectObject]
+              ObjectObject, AstSequenceObject, AstSequenceObjectIterator]
 
 ###############################################################################
 # Evaluation
@@ -534,6 +568,12 @@ def ast_interpret(inter: Interpret, root: AstElement[Any]) -> Any:
         stage, arg_count, data, element = stack.pop()
         stage = CurrentStage(stage, take(pile, arg_count), data)
         response = element.inter_step(inter, stage)
+
+        # print("STEP")
+        # print(ppretty(element))
+        # print(ppretty(stage))
+        # print(ppretty(data))
+        # print(ppretty(response))
 
         if isinstance(response, Dependency):
             stack.append((response.stage, response.give_amount, response.data, element))
@@ -855,6 +895,40 @@ class FunctionDefinition(AstElement[FunctionObject]):
     def get_free_names(self) -> Set[str]:
         return set.union(*(o.get_free_names() for o in self.options))
 
+
+Bottom = ObjectObject('Bottom', []);
+
+class CaptureExpression:
+
+    def __init__(self, expression: Expression, inter: Interpret):
+        self.expression = expression
+        capture_names = self.expression.get_free_names()
+        self.capture = {}
+        for name in capture_names:
+            val = inter.sstack.lookup(name)
+            if val is None:
+                raise expression.inter_error('symbol not found in outer context')
+            self.capture[name] = val
+
+    def inter_step(self, inter: Interpret, stage: CurrentStage) \
+        -> Response[Value, None]:
+
+        if stage.stage == 0:
+            inter.sstack.add_scope()
+            for name, value in self.capture.items():
+                inter.sstack.put_on_last_future(name, value)
+            inter.sstack.add_scope()
+            return Dependency(1, [self.expression], None)
+
+        if stage.stage == 1:
+            res = stage.args[0]
+            inter.sstack.pop_scope()
+            inter.sstack.pop_scope()
+            return res
+
+        assert False
+
+
 class SequenceDefinition(AstElement[SequenceObject]):
 
     def __init__(self, location: Location, elements: List[Expression]):
@@ -865,6 +939,13 @@ class SequenceDefinition(AstElement[SequenceObject]):
         return (CHR_LBRACK
                 + f'{CHR_COMMA} '.join(str(e) for e in self.elements)
                 + CHR_RBRACK)
+
+    def inter_step(self, inter: Interpret, stage: CurrentStage) \
+        -> Response[SequenceObject, None]:
+        return AstSequenceObject([CaptureExpression(e, inter) for e in self.elements]);
+
+    def get_free_names(self):
+        return set.union(set(), *(e.get_free_names() for e in self.elements))
 
 
 class IfStmt(AstElement[Value]):
@@ -1300,7 +1381,7 @@ def parse_sequence(state: ParsingState[Lexem, Grammar]) -> Expression:
 
     while match_token(state, LEX_RBRACK) is None:
         elements.append(parse_expression(state))
-        if (match_token(state, LEX_COMMA) is None):
+        if (match_token(state, LEX_SEMICOLON) is None):
             break
 
     req_token(state, LEX_RBRACK)
@@ -1506,6 +1587,16 @@ def stage_function(fun: Callable[..., Value]) -> F[Value]:
     return stage_function_w
 
 
+def builtin_function_staged(inter: Interpret, name: str, argument_count: int) \
+        -> Callable[[Callable[..., Response]], Callable[..., Value]]:
+    def builtin_function_d(fun: Callable[..., Response]) -> Callable[..., Value]:
+        define_builtin(
+            inter,
+            name,
+            FunctionObject(fun, argument_count))
+        return fun
+    return builtin_function_d
+
 def builtin_function(inter: Interpret, name: str, argument_count: int) \
         -> Callable[[Callable[..., Value]], Callable[..., Value]]:
     def builtin_function_d(fun: Callable[..., Value]) -> Callable[..., Value]:
@@ -1544,6 +1635,36 @@ inter.sstack.add_scope()
 def type_check(a: Value, b) -> None:
     if not isinstance(a, b):
         raise TypeError(f'{a} is not of type {b}')
+
+
+@builtin_function(inter, 'show', 1)
+def f_show(_: Interpret, a: Value) -> str:
+    return str(a)
+
+@builtin_function(inter, 'print', 1)
+def f_show(_: Interpret, a: Value) -> Value:
+    print(str(a))
+    return a
+
+@builtin_function(inter, 'iter', 1)
+def f_iter(_: Interpret, a: Value) -> Value:
+    assert isinstance(a, AstSequenceObject)
+    return AstSequenceObjectIterator(a)
+
+@builtin_function_staged(inter, 'next', 1)
+def f_next(inter: Interpret, stage: CurrentStage) \
+    -> Response[Value, Optional[Tuple[AstSequenceObjectIterator, int]]]:
+
+    if stage.stage == 0:
+        sequence = stage.args[0]
+        assert isinstance(sequence, AstSequenceObjectIterator)
+        return Dependency(1, [sequence], None)
+    elif stage.stage == 1:
+        res = stage.args[0]
+        return res
+
+    assert False
+
 
 @builtin_operator(inter, grammar, '+', 2, 2, False)
 def op_plus(_: Interpret, a: Value, b: Value) -> int:

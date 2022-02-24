@@ -2,6 +2,8 @@ from __future__ import annotations
 from typing import (Generator, TypeVar, Tuple, Generic, Optional, Callable,
                     Union, List, Any, Dict, Set, Iterable)
 from ppretty import ppretty
+import argparse as ap
+import sys
 
 ###############################################################################
 # TODO
@@ -279,7 +281,10 @@ class ParsingState(Generic[T, S]):
     def __init__(self, gen: Gen[T], data: S, row_element: Optional[T] = None):
         self.gen = gen
         self.data = data
-        self.value: Optional[T] = next(self.gen)
+        try:
+            self.value: Optional[T] = next(self.gen)
+        except StopIteration:
+            self.value = None
 
         self.row_element : Optional[T] = row_element
 
@@ -1588,11 +1593,29 @@ def load_document(filename: str) -> Document:
     lex_state = ParsingState((lexer(state)), grammar)
     return parse_document(lex_state)
 
+def parse_args(args: List[str]) -> Any:
+    parser = ap.ArgumentParser();
+    parser.add_argument('source_files', nargs='+')
+    parser.add_argument('-r', '--raw', action='store_const',
+                        const=True);
+    return parser.parse_args(args)
+
 try:
+
+    arguments = parse_args(sys.argv[1:])
+
     res = dict()
-    res.update(load_document('../sandbox/prelude.sq').interpret(inter))
-    document = load_document('../sandbox/test.sq')
-    res.update(document.interpret(inter))
+
+    if not arguments.raw:
+        res.update(load_document('../sandbox/prelude.sq').interpret(inter))
+
+    for path in arguments.source_files:
+        document = load_document(path)
+        res.update(document.interpret(inter))
+
+    if 'main' not in res:
+        raise InterError('main not found')
+
     print(res['main'])
 except (ParseError, PatternReject, InterError) as e:
     print(f'{e.__class__.__name__}: {str(e)}')

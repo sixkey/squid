@@ -54,6 +54,7 @@ Gen = Generator[T, None, None]
 
 indent = 0
 
+
 def loud(f: Callable[..., T]) -> Callable[..., T]:
     def wrapper(*args: Any, **kwargs: Any) -> T:
         global indent
@@ -161,10 +162,11 @@ LEX_THEN, CHR_THEN = define_keyword('then')
 LEX_ELSE, CHR_ELSE = define_keyword('else')
 
 LEX_EOF = define_lex('eof')
-CHR_EOF = 'eof';
+CHR_EOF = 'eof'
 
 LexemCore = Tuple[int, str]
 Lexem = Tuple[int, str, Tuple[int, int]]
+
 
 def str_of_lexid(lexid: int) -> str:
     return STR_REP[lexid]
@@ -193,7 +195,7 @@ def lexer(state: ParsingState[str, None]) -> Gen[Lexem]:
         else:
             raise ParsingError(f'Unexpected character: {character}')
 
-        if lexem != None:
+        if lexem is not None:
             yield lexem[0], lexem[1], (row_idx, col_idx)
     yield LEX_EOF, CHR_EOF, (state.row_counter, state.col_counter)
 
@@ -246,8 +248,10 @@ def lex_operator(state: ParsingState[str, None]) -> LexemCore:
 def identifier_start(c: str) -> bool:
     return c.isalpha() or c == '_'
 
+
 def identifier_char(c: str) -> bool:
     return c.isalnum() or c == '_' or c == "'"
+
 
 def lex_identifier(state: ParsingState[str, None]) -> LexemCore:
     buffer = state.req_pred(identifier_start)
@@ -268,11 +272,14 @@ def lex_identifier(state: ParsingState[str, None]) -> LexemCore:
 class PatternReject(BaseException):
     pass
 
+
 class ParsingError(BaseException):
     pass
 
+
 class ParseError(BaseException):
     pass
+
 
 class ParsingState(Generic[T, S]):
 
@@ -284,7 +291,7 @@ class ParsingState(Generic[T, S]):
         except StopIteration:
             self.value = None
 
-        self.row_element : Optional[T] = row_element
+        self.row_element: Optional[T] = row_element
 
         self.row_counter = 0
         self.col_counter = 0
@@ -347,7 +354,9 @@ class ParsingState(Generic[T, S]):
 # Location
 ###############################################################################
 
+
 Location = Tuple[int, int]
+
 
 def str_of_location(location: Tuple[int, int]) -> str:
     return f'{location[0] + 1}:{location[1] + 1}'
@@ -356,19 +365,21 @@ def str_of_location(location: Tuple[int, int]) -> str:
 # ScopeStack
 ###############################################################################
 
+
 class FutureBinding(Generic[T]):
 
     def __init__(self) -> None:
-        self.value : Optional[T]
+        self.value: Optional[T]
 
 
 Binding = Union[T, FutureBinding[T]]
+
 
 class ScopeStack(Generic[K, V]):
 
     def __init__(self, stack: Optional[List[Dict[K, Binding[V]]]] = None):
         self.stack: List[Dict[K, Binding[V]]] = (
-                stack if stack is not None else [])
+            stack if stack is not None else [])
 
     def lookup(self, symbol: K) -> Optional[V]:
         value = self.lookup_future(symbol)
@@ -418,7 +429,7 @@ class ScopeStack(Generic[K, V]):
         return self.lookup(key) is not None
 
     def __str__(self) -> str:
-        return '\n'.join(str(l) for l in self.stack)
+        return '\n'.join(str(e) for e in self.stack)
 
 
 ###############################################################################
@@ -447,7 +458,9 @@ class Dependency(Generic[T]):
         self.stage = stage
         self.children = children
         self.data = data
-        self.give_amount = give_amount if give_amount != None else len(children)
+        self.give_amount = give_amount if give_amount is not None else len(
+            children)
+
 
 class CurrentStage(Generic[T]):
 
@@ -456,21 +469,25 @@ class CurrentStage(Generic[T]):
         self.args = args
         self.data = data
 
+
 Response = Union[T, Dependency[R]]
+
 
 class SequenceObject:
     pass
 
+
 class FieldObject(Generic[T]):
 
     def __init__(self, size: int, def_value: T):
-        self.field = [def_value] * size;
+        self.field = [def_value] * size
 
     def __str__(self) -> str:
         return 'Field {' + ', '.join(str(e) for e in self.field) + '}'
 
 
 F = Callable[[Interpret, CurrentStage], Response[T, None]]
+
 
 class TypeConstructor:
 
@@ -483,6 +500,7 @@ class TypeConstructor:
             return '(' + ','.join(str(e) for e in self.elements) + ')'
         return self.name + ' '.join(str(e) for e in self.elements)
 
+
 class FunctionObject:
 
     def __init__(self, f: F[Response[Value, None]],
@@ -493,14 +511,19 @@ class FunctionObject:
         self.partial = list(partial)
 
     def copy(self, *partial: Value) -> FunctionObject:
-        return FunctionObject(self.f, self.argument_count - len(partial), *partial)
+        return FunctionObject(
+            self.f, self.argument_count - len(partial), *partial)
 
-    def apply(self, inter: Interpret, stage: CurrentStage[bool]) -> Response[Value, None]:
+    def apply(self, inter: Interpret, stage: CurrentStage[bool]) \
+            -> Response[Value, None]:
         assert len(stage.args) <= self.argument_count
         if stage.data:
-            return self.f(inter, CurrentStage(stage.stage, stage.args, None))
+            return self.f(inter,
+                          CurrentStage(stage.stage, stage.args, None))
         if len(stage.args) == self.argument_count:
-            return self.f(inter, CurrentStage(stage.stage, self.partial + stage.args, None))
+            return self.f(inter,
+                          CurrentStage(
+                              stage.stage, self.partial + stage.args, None))
         return self.copy(*stage.args)
 
     def __repr__(self) -> str:
@@ -521,7 +544,8 @@ class AstSequenceObject(SequenceObject):
 
     def __init__(self, elements: List[CaptureExpression]):
         self.elements = elements
-        self.pointer = 0;
+        self.pointer = 0
+
 
 class AstSequenceObjectIterator(SequenceObject):
 
@@ -529,7 +553,9 @@ class AstSequenceObjectIterator(SequenceObject):
         self.sequence_object = sequence_object
         self.pointer = 0
 
-    def inter_step(self, inter: Interpret, stage: CurrentStage):
+    def inter_step(self, inter: Interpret,
+                   stage: CurrentStage[Optional[int]]) \
+            -> Response[Value, int]:
         if stage.stage == 0:
             if self.pointer >= len(self.sequence_object.elements):
                 return Bottom
@@ -537,7 +563,7 @@ class AstSequenceObjectIterator(SequenceObject):
                 inter, CurrentStage(0, [], None))
 
         elif stage.stage == 1:
-            assert (stage.data != None)
+            assert (stage.data is not None)
             seq_stage = stage.data
             lower = self.sequence_object.elements[self.pointer].inter_step(
                 inter, CurrentStage(seq_stage, stage.args, None))
@@ -551,6 +577,7 @@ class AstSequenceObjectIterator(SequenceObject):
             self.pointer += 1
             return lower
 
+
 Value = Union[bool, int, float, str, FunctionObject, SequenceObject,
               ObjectObject, AstSequenceObject, AstSequenceObjectIterator,
               FieldObject]
@@ -558,6 +585,7 @@ Value = Union[bool, int, float, str, FunctionObject, SequenceObject,
 ###############################################################################
 # Evaluation
 ###############################################################################
+
 
 def take(a: List[T], count: int) -> List[T]:
     res = []
@@ -568,23 +596,24 @@ def take(a: List[T], count: int) -> List[T]:
 
 def ast_interpret(inter: Interpret, root: AstElement[Any]) -> Any:
 
-    pile : List[Value] = []
-    stack : List[Tuple[int, int, Any, AstElement[Any]]] = [(0, 0, None, root)]
+    pile: List[Value] = []
+    stack: List[Tuple[int, int, Any, AstElement[Any]]] = [(0, 0, None, root)]
 
     while stack:
 
         stage, arg_count, data, element = stack.pop()
-        stage = CurrentStage(stage, take(pile, arg_count), data)
-        response = element.inter_step(inter, stage)
+        stage_pack = CurrentStage(stage, take(pile, arg_count), data)
+        response = element.inter_step(inter, stage_pack)
 
         # print("STEP")
         # print(ppretty(element))
-        # print(ppretty(stage))
+        # print(ppretty(stage_pack))
         # print(ppretty(data))
         # print(ppretty(response))
 
         if isinstance(response, Dependency):
-            stack.append((response.stage, response.give_amount, response.data, element))
+            stack.append(
+                (response.stage, response.give_amount, response.data, element))
             for child in response.children:
                 stack.append((0, 0, None, child))
         else:
@@ -612,7 +641,7 @@ class Grammar:
         self.operator_levels = operator_levels
 
     def add_operator(self, name: str, level: int, arity: int,
-                     associativity: int):
+                     associativity: int) -> None:
 
         if level >= len(self.operator_table):
             raise RuntimeError(
@@ -633,12 +662,13 @@ class Grammar:
 # Ast
 ###############################################################################
 
+
 class AstElement(Generic[T]):
 
     def __init__(self, location: Location):
         self.location = location
 
-    def inter_error(self, message: str, e: type = InterError) -> BaseException:
+    def inter_error(self, message: str, e: type = InterError) -> InterError:
         return e(f'{str_of_location(self.location)} - {message}')
 
     def interpret(self, inter: Interpret) -> T:
@@ -648,7 +678,7 @@ class AstElement(Generic[T]):
         ...
 
     def inter_step(self, inter: Interpret, stage: CurrentStage[None]) \
-            -> Response[Value]:
+            -> Response[Value, Any]:
         ...
 
 
@@ -670,7 +700,7 @@ class Constant(AstElement[Value]):
         return set()
 
     def inter_step(self, inter: Interpret, stage: CurrentStage[None]) \
-            -> Response[Value]:
+            -> Response[Value, None]:
         return self.value
 
 
@@ -695,14 +725,15 @@ class Identifier(AstElement[Value]):
         return set([self.name])
 
     def inter_step(self, inter: Interpret, stage: CurrentStage[None]) \
-            -> Response[Value]:
+            -> Response[Value, None]:
         val = inter.sstack.lookup(self.name)
         if val is None:
             raise self.inter_error(f"'{self.name}' not defined")
         return val
 
-def reverse(l: List[T]) -> List[T]:
-    return list(reversed(l))
+
+def reverse(lst: List[T]) -> List[T]:
+    return list(reversed(lst))
 
 
 class FunctionApplication(AstElement[Value]):
@@ -738,7 +769,10 @@ class FunctionApplication(AstElement[Value]):
                 raise self.inter_error(f'value {fun_val} is not a function')
 
             argument_count = min(len(self.arguments), fun_val.argument_count)
-            return Dependency(2, reverse(self.arguments), (0, fun_val, len(self.arguments), False), argument_count)
+            return Dependency(
+                2, reverse(self.arguments),
+                (0, fun_val, len(self.arguments), False),
+                argument_count)
 
         if stage.stage == 2:
 
@@ -746,15 +780,19 @@ class FunctionApplication(AstElement[Value]):
 
             fun_stage, fun_val, reminder, force = stage.data
 
-            response = fun_val.apply(inter, CurrentStage(fun_stage, reverse(stage.args), force))
+            response = fun_val.apply(inter, CurrentStage(
+                fun_stage, reverse(stage.args), force))
 
             if isinstance(response, Dependency):
                 return Dependency(
-                    2, response.children, (response.stage, fun_val, reminder, True))
+                    2, response.children,
+                    (response.stage, fun_val, reminder, True))
 
             if isinstance(response, FunctionObject) and reminder == 0:
                 argument_delta = min(reminder, response.argument_count)
-                return Dependency(2, [], (0, response, argument_delta, False), argument_delta)
+                return Dependency(
+                    2, [],
+                    (0, response, argument_delta, False), argument_delta)
 
             reminder = max(reminder - fun_val.argument_count, 0)
 
@@ -766,7 +804,6 @@ class FunctionApplication(AstElement[Value]):
             return response
 
         assert False
-
 
 
 class Constructor(AstElement[ObjectObject]):
@@ -795,8 +832,10 @@ class Constructor(AstElement[ObjectObject]):
 
         assert False
 
+
 def list_of_opt(opt: Optional[T]) -> List[T]:
     return [] if opt is None else [opt]
+
 
 class FunctionOption(AstElement[FunctionObject]):
 
@@ -834,6 +873,7 @@ class FunctionOption(AstElement[FunctionObject]):
         names = names.difference(remove)
         return names
 
+
 class FunctionDefinition(AstElement[FunctionObject]):
 
     def __init__(self, location: Location, options: List[FunctionOption],
@@ -845,7 +885,8 @@ class FunctionDefinition(AstElement[FunctionObject]):
         self.arity = arity
 
     def __str__(self) -> str:
-        return (CHR_FUN + f' {CHR_FUN_PATTERN}'.join(str(o) for o in self.options))
+        return (CHR_FUN
+                + f' {CHR_FUN_PATTERN}'.join(str(o) for o in self.options))
 
     def inflate(self, other: FunctionDefinition) -> bool:
         if self.arity != other.arity:
@@ -853,9 +894,10 @@ class FunctionDefinition(AstElement[FunctionObject]):
         self.options += other.options
         return True
 
-    def inter_step(self, inter: Interpret, stage: CurrentStage) -> Response[FunctionObject, None]:
+    def inter_step(self, inter: Interpret, stage: CurrentStage) \
+            -> Response[FunctionObject, None]:
 
-        closure : Dict[str, Binding[Value]] = {}
+        closure: Dict[str, Binding[Value]] = {}
 
         for name in self.capture_names:
             value = inter.sstack.lookup_future(name)
@@ -863,7 +905,8 @@ class FunctionDefinition(AstElement[FunctionObject]):
                 raise self.inter_error(f"value '{name}' not defined")
             closure[name] = value
 
-        def f(inter: Interpret, stage: CurrentStage[None]) -> Response[Value, None]:
+        def f(inter: Interpret, stage: CurrentStage[None]) \
+                -> Response[Value, None]:
 
             if stage.stage == 0:
 
@@ -886,7 +929,9 @@ class FunctionDefinition(AstElement[FunctionObject]):
                         errors.append(e)
 
                 if assignments is None:
-                    raise self.inter_error('None of the patterns matched' + '\n'.join(str(e) for e in errors))
+                    raise self.inter_error(
+                        'None of the patterns matched'
+                        + '\n'.join(str(e) for e in errors))
 
                 for name, arg in assignments.items():
                     inter.sstack.put_on_last(name, arg)
@@ -908,8 +953,9 @@ class FunctionDefinition(AstElement[FunctionObject]):
         return set.union(*(o.get_free_names() for o in self.options))
 
 
-Bottom = ObjectObject('Bottom', []);
-Unit = ObjectObject('Unit', []);
+Bottom = ObjectObject('Bottom', [])
+Unit = ObjectObject('Unit', [])
+
 
 class CaptureExpression:
 
@@ -920,11 +966,12 @@ class CaptureExpression:
         for name in capture_names:
             val = inter.sstack.lookup(name)
             if val is None:
-                raise expression.inter_error('symbol not found in outer context')
+                raise expression.inter_error(
+                    'symbol not found in outer context')
             self.capture[name] = val
 
     def inter_step(self, inter: Interpret, stage: CurrentStage) \
-        -> Response[Value, None]:
+            -> Response[Value, None]:
 
         if stage.stage == 0:
             inter.sstack.add_scope()
@@ -954,11 +1001,13 @@ class SequenceDefinition(AstElement[SequenceObject]):
                 + CHR_RBRACK)
 
     def inter_step(self, inter: Interpret, stage: CurrentStage) \
-        -> Response[SequenceObject, None]:
-        return AstSequenceObject([CaptureExpression(e, inter) for e in self.elements]);
+            -> Response[SequenceObject, None]:
+        return AstSequenceObject(
+            [CaptureExpression(e, inter) for e in self.elements])
 
     def get_free_names(self):
-        return set.union(set(), *(e.get_free_names() for e in self.elements))
+        return set.union(
+            set(), *(e.get_free_names() for e in self.elements))
 
 
 class IfStmt(AstElement[Value]):
@@ -982,8 +1031,8 @@ class IfStmt(AstElement[Value]):
 
     def __str__(self) -> str:
         return (f'{CHR_IF} {str(self.cond)} '
-                +f'{CHR_THEN} {str(self.branch_true)}'
-                +f'{CHR_ELSE} {str(self.branch_false)}')
+                + f'{CHR_THEN} {str(self.branch_true)}'
+                + f'{CHR_ELSE} {str(self.branch_false)}')
 
     def get_free_names(self) -> Set[str]:
         res = self.cond.get_free_names()
@@ -992,14 +1041,16 @@ class IfStmt(AstElement[Value]):
         return res
 
     def inter_step(self, inter: Interpret, stage: CurrentStage[None]) \
-        -> Response[Value]:
+            -> Response[Value]:
 
         if stage.stage == 0:
             return Dependency(1, [self.cond], None)
         if stage.stage == 1:
             cond = stage.args[0]
             return Dependency(2,
-                              [self.branch_true if cond else self.branch_false],
+                              [self.branch_true
+                               if cond
+                               else self.branch_false],
                               None)
         if stage.stage == 2:
             return stage.args[0]
@@ -1018,22 +1069,22 @@ class LetIn(AstElement[Value]):
         self.body = body
 
     def __str__(self) -> str:
-        return ( f'{CHR_LET} {str(self.pattern)} {CHR_ASSIGN} '
-               + f'{str(self.expression)} {CHR_IN} {str(self.body)}' )
+        return (f'{CHR_LET} {str(self.pattern)} {CHR_ASSIGN} '
+                + f'{str(self.expression)} {CHR_IN} {str(self.body)}')
 
     def inter_step(self, inter: Interpret, stage: CurrentStage[None]) \
-        -> Response[Value]:
+            -> Response[Value]:
 
         if stage.stage == 0:
             return Dependency(1, [self.expression], None)
 
         if stage.stage == 1:
 
-            assignments = {};
+            assignments = {}
             pattern_match(self.pattern, stage.args[0], assignments)
             inter.sstack.add_scope()
             for key, value in assignments.items():
-                inter.sstack.put_on_last(key, value);
+                inter.sstack.put_on_last(key, value)
             return Dependency(2, [self.body], None)
 
         if stage.stage == 2:
@@ -1043,7 +1094,8 @@ class LetIn(AstElement[Value]):
         assert False
 
     def get_free_names(self) -> Set[str]:
-        return self.expression.get_free_names() - self.pattern.get_free_names();
+        return (self.expression.get_free_names()
+                - self.pattern.get_free_names())
 
 
 Atom = Union[FunctionApplication,
@@ -1070,7 +1122,7 @@ class Assignment(AstElement[Tuple[str, Value]]):
         return self.name + f' {CHR_ASSIGN} ' + str(self.expr)
 
     def interpret(self, inter: Interpret) -> Tuple[str, Value]:
-        binding : FutureBinding[Value] = FutureBinding()
+        binding: FutureBinding[Value] = FutureBinding()
         inter.sstack.put_on_last_future(self.name, binding)
         value = ast_interpret(inter, self.expr)
         binding.value = value
@@ -1085,8 +1137,8 @@ class Document(AstElement[Dict[str, Value]]):
 
     def __init__(self, location: Location) -> None:
         super().__init__(location)
-        self.names : Dict[str, Assignment] = {}
-        self.assignments : List[Assignment] = []
+        self.names: Dict[str, Assignment] = {}
+        self.assignments: List[Assignment] = []
 
     def __str__(self) -> str:
         return '\n'.join(str(a) for a in self.assignments)
@@ -1134,6 +1186,7 @@ def match_token(state: ParsingState[Lexem, Any],
                 *lex_id: int) -> Optional[Lexem]:
     return state.match_pred(lambda x: x[0] in lex_id)
 
+
 def token_is_next(state: ParsingState[Lexem, Any], *lex_id: int) -> bool:
     head = None
     head = state.rpeek()
@@ -1141,16 +1194,20 @@ def token_is_next(state: ParsingState[Lexem, Any], *lex_id: int) -> bool:
         return False
     return True
 
+
 def perror_msg(location: Tuple[int, int], message: str) -> str:
     return f'{str_of_location(location)} - {message}'
 
+
 def perror_lex_msg(lex: Lexem, message: str) -> str:
     return perror_msg(lex[2], message)
+
 
 def perror_expected(lex: Lexem, *expected: str) -> str:
     return perror_lex_msg(lex,
                           "expected " + ', '.join(f"{e}" for e in expected)
                           + f" but got '{lex[1]}'")
+
 
 def parsing_error(location: Tuple[int, int], message: str) -> ParseError:
     return ParseError(perror_msg(location, message))
@@ -1166,13 +1223,17 @@ def req_token(state: ParsingState[Lexem, Any], *lex_id: int) -> Lexem:
             perror_expected(head, *(str_of_lexid(i) for i in lex_id)))
     return head
 
-def req_wholetoken(state: ParsingState[Lexem, Any], *lex: Tuple[int, str]) -> Lexem:
+
+def req_wholetoken(state: ParsingState[Lexem, Any], *lexes: Tuple[int, str]) \
+        -> Lexem:
     head = None
     head = state.rpop()
 
-    if (head[0], head[1]) not in lex:
+    if (head[0], head[1]) not in lexes:
         raise ParseError(
-            perror_expected(head, *(f'{str_of_lexid(l[0])} {l[1]}'  for l in lex)))
+            perror_expected(
+                head,
+                *(f'{str_of_lexid(lex[0])} {lex[1]}' for lex in lexes)))
     return head
 
 
@@ -1186,13 +1247,10 @@ def peek_token(state: ParsingState[Lexem, Any]) -> Optional[int]:
 def cur_location(state: ParsingState[Lexem, Grammar]) -> Location:
     return state.rpeek()[2]
 
+
 def parse_document(state: ParsingState[Lexem, Grammar]) -> Document:
 
     location = cur_location(state)
-    res: List[Assignment] = []
-
-    names: Dict[str, AstElement] = {}
-
     document = Document(location)
 
     while state and state.peek()[0] != LEX_EOF:
@@ -1210,7 +1268,8 @@ def parse_document(state: ParsingState[Lexem, Grammar]) -> Document:
     return document
 
 
-def parse_operator_definition(state: ParsingState[Lexem, Grammar]) -> Assignment:
+def parse_operator_definition(state: ParsingState[Lexem, Grammar]) \
+        -> Assignment:
     location = cur_location(state)
     op_def = req_token(state, LEX_OPBINL, LEX_OPBINR)
     operator = req_token(state, LEX_OPERATOR)
@@ -1220,9 +1279,11 @@ def parse_operator_definition(state: ParsingState[Lexem, Grammar]) -> Assignment
     level_int = int(level[1])
 
     if level_int < 0 or level_int >= state.data.operator_levels:
-        raise parsing_error(location, f'operator level out of bounds {level_int}')
+        raise parsing_error(
+            location, f'operator level out of bounds {level_int}')
 
-    state.data.add_operator(operator[1], level_int, 2, op_def[0] == LEX_OPBINR)
+    state.data.add_operator(
+        operator[1], level_int, 2, op_def[0] == LEX_OPBINR)
 
     return Assignment(location, operator[1], function)
 
@@ -1234,6 +1295,7 @@ def parse_assignment(state: ParsingState[Lexem, Grammar]) -> Assignment:
     expr = parse_expression(state)
     return Assignment(location, name[1], expr)
 
+
 def parse_letin(state: ParsingState[Lexem, Grammar]) -> LetIn:
     location = cur_location(state)
     req_token(state, LEX_LET)
@@ -1244,6 +1306,7 @@ def parse_letin(state: ParsingState[Lexem, Grammar]) -> LetIn:
     req_token(state, LEX_IN)
     body = parse_expression(state)
     return LetIn(location, pattern, expression, body)
+
 
 def parse_arguments(state: ParsingState[Lexem, Grammar]) -> List[Atom]:
     arguments: List[Expression] = []
@@ -1267,6 +1330,7 @@ def parse_identifier(state: ParsingState[Lexem, Grammar]) -> Identifier:
     token = req_token(state, LEX_IDENTIFIER)
     return Identifier(token[2], token[1])
 
+
 class CompPattern(AstElement):
 
     def __init__(self, location: Location, name: str,
@@ -1278,21 +1342,27 @@ class CompPattern(AstElement):
     def __str__(self) -> str:
         return self.name + ''.join(' ' + str(p) for p in self.subpatterns)
 
+
 class PatternNotMatched(BaseException):
     pass
 
+
 Pattern = Union[CompPattern, Identifier, Constant]
+
 
 def pattern_get_free_names(pattern: Pattern) -> Set[str]:
     if isinstance(pattern, Identifier):
         return set(pattern.name)
     if isinstance(pattern, CompPattern):
-        return set.union(set(), *(pattern_get_free_names(p) for p in pattern.subpatterns))
+        return set.union(
+            set(), *(pattern_get_free_names(p) for p in pattern.subpatterns))
     if isinstance(pattern, Constant):
         return set()
     assert False, type(pattern)
 
-def pattern_match(pattern: Pattern, value: Value, res: Dict[str, Value]) -> bool:
+
+def pattern_match(pattern: Pattern, value: Value, res: Dict[str, Value]) \
+        -> bool:
     if isinstance(pattern, Identifier):
         res[pattern.name] = value
         return True
@@ -1306,8 +1376,8 @@ def pattern_match(pattern: Pattern, value: Value, res: Dict[str, Value]) -> bool
         raise pattern.inter_error(
             f"object {value} is not a '{pattern.name}'", PatternNotMatched)
 
-
-    if value.name != pattern.name or len(value.values) != len(pattern.subpatterns):
+    if (value.name != pattern.name
+            or len(value.values) != len(pattern.subpatterns)):
         raise pattern.inter_error(
             f"object {value} is not a '{pattern.name}'", PatternNotMatched)
 
@@ -1316,6 +1386,7 @@ def pattern_match(pattern: Pattern, value: Value, res: Dict[str, Value]) -> bool
             return False
 
     return True
+
 
 def parse_pattern_atom(state: ParsingState[Lexem, Any]) -> Pattern:
     location = cur_location(state)
@@ -1329,7 +1400,7 @@ def parse_pattern_atom(state: ParsingState[Lexem, Any]) -> Pattern:
     if state.rpeek()[0] in LITERALS:
         return parse_literal(state)
     next_token = state.peek()
-    if  (next_token[0], next_token[1]) == (LEX_OPERATOR, '<'):
+    if (next_token[0], next_token[1]) == (LEX_OPERATOR, '<'):
         state.pop()
         name = parse_identifier(state).name
         subpatterns = []
@@ -1341,7 +1412,9 @@ def parse_pattern_atom(state: ParsingState[Lexem, Any]) -> Pattern:
         req_wholetoken(state, (LEX_OPERATOR, '>'))
         return CompPattern(location, name, subpatterns)
 
-    raise PatternReject(f'token {str_of_lexid(peek_token(state))} is not a match')
+    raise PatternReject(
+        f'token {str_of_lexid(peek_token(state))} is not a match')
+
 
 def parse_pattern(state: ParsingState[Lexem, Any]) -> Pattern:
 
@@ -1357,8 +1430,6 @@ def parse_pattern(state: ParsingState[Lexem, Any]) -> Pattern:
     return CompPattern(location, 'Tuple', units)
 
 
-
-
 def parse_function_definition(state: ParsingState[Lexem, Grammar]) \
         -> FunctionDefinition:
 
@@ -1368,7 +1439,7 @@ def parse_function_definition(state: ParsingState[Lexem, Grammar]) \
 
     match_token(state, LEX_FUN_PATTERN)
 
-    options : List[FunctionOption] = []
+    options: List[FunctionOption] = []
 
     arity = None
 
@@ -1384,7 +1455,8 @@ def parse_function_definition(state: ParsingState[Lexem, Grammar]) \
         if arity is None:
             arity = len(arguments)
         elif arity != len(arguments):
-            raise parsing_error(location, 'different options have different arrities')
+            raise parsing_error(
+                location, 'different options have different arrities')
 
         producing = None
         if match_token(state, LEX_PROD):
@@ -1420,6 +1492,7 @@ def parse_sequence(state: ParsingState[Lexem, Grammar]) -> Expression:
 
     return SequenceDefinition(location, elements)
 
+
 def parse_if_stmt(state: ParsingState[Lexem, Grammar]) -> IfStmt:
 
     location = cur_location(state)
@@ -1432,6 +1505,7 @@ def parse_if_stmt(state: ParsingState[Lexem, Grammar]) -> IfStmt:
     branch_false = parse_expression(state)
     return IfStmt(location, cond, branch_true, branch_false)
 
+
 def parse_obj_definition(state: ParsingState[Lexem, Grammar]) -> Constructor:
 
     location = cur_location(state)
@@ -1442,7 +1516,9 @@ def parse_obj_definition(state: ParsingState[Lexem, Grammar]) -> Constructor:
 
     return Constructor(location, name, args)
 
+
 LITERALS = [LEX_LIT_STR, LEX_LIT_DOUBLE, LEX_LIT_INT]
+
 
 def parse_literal(state: ParsingState[Lexem, Grammar]) -> Constant:
     token = req_token(state, *LITERALS)
@@ -1453,6 +1529,7 @@ def parse_literal(state: ParsingState[Lexem, Grammar]) -> Constant:
     if (token[0] == LEX_LIT_INT):
         return Constant(token[2], int(token[1]))
     assert False
+
 
 def parse_atom(state: ParsingState[Lexem, Grammar]) -> Expression:
 
@@ -1482,7 +1559,8 @@ def parse_atom(state: ParsingState[Lexem, Grammar]) -> Expression:
     raise PatternReject(perror_expected(token, 'expression element'))
 
 
-def match_operator(state: ParsingState[Lexem, Grammar], operators: Iterable[str]):
+def match_operator(state: ParsingState[Lexem, Grammar],
+                   operators: Iterable[str]):
 
     if not state:
         return None
@@ -1499,16 +1577,13 @@ def match_operator(state: ParsingState[Lexem, Grammar], operators: Iterable[str]
     if lex[1] not in state.data.operators:
         raise ParseError(
             perror_lex_msg(lex,
-                            f'operator {lex[1]} not defined'))
-
+                           f'operator {lex[1]} not defined'))
 
 
 def parse_expression_level_unary(state: ParsingState[Lexem, Grammar],
                                  level: int) -> Expression:
 
     _, _, prefix, posfix = state.data.operator_table[level - 1]
-    prefix_tokens = [(LEX_OPERATOR, op) for op in prefix]
-    posfix_tokens = [(LEX_OPERATOR, op) for op in posfix]
 
     prefix_stack = []
 
@@ -1537,8 +1612,6 @@ def parse_expression_level(state: ParsingState[Lexem, Grammar],
 
     elements = [parse_expression_level_unary(state, level)]
     operators = []
-    infix_tokens = [(LEX_OPERATOR, op) for op in infix]
-
 
     while (op := match_operator(state, infix)) is not None:
         operators.append(op)
@@ -1557,8 +1630,10 @@ def parse_expression_level(state: ParsingState[Lexem, Grammar],
 
     return res
 
+
 def parse_expression(state: ParsingState[Lexem, Grammar]) -> Expression:
     return parse_tuple(state)
+
 
 def parse_tuple(state: ParsingState[Lexem, Grammar]) -> Expression:
 
@@ -1621,13 +1696,15 @@ def stage_function(fun: Callable[..., Value]) -> F[Value]:
 
 def builtin_function_staged(inter: Interpret, name: str, argument_count: int) \
         -> Callable[[Callable[..., Response]], Callable[..., Value]]:
-    def builtin_function_d(fun: Callable[..., Response]) -> Callable[..., Value]:
+    def builtin_function_d(fun: Callable[..., Response]) \
+            -> Callable[..., Value]:
         define_builtin(
             inter,
             name,
             FunctionObject(fun, argument_count))
         return fun
     return builtin_function_d
+
 
 def builtin_function(inter: Interpret, name: str, argument_count: int) \
         -> Callable[[Callable[..., Value]], Callable[..., Value]]:
@@ -1640,8 +1717,8 @@ def builtin_function(inter: Interpret, name: str, argument_count: int) \
     return builtin_function_d
 
 
-def builtin_operator(inter: Interpret, grammar: Grammar, name: str, level: int,
-                     arity: int, associativity: bool) \
+def builtin_operator(inter: Interpret, grammar: Grammar, name: str,
+                     level: int, arity: int, associativity: bool) \
         -> Callable[[Callable[..., Value]], Callable[..., Value]]:
     assert arity in {1, 2}
 
@@ -1664,41 +1741,49 @@ grammar = Grammar(10)
 inter = Interpret()
 inter.sstack.add_scope()
 
+
 def type_check(a: Value, b) -> None:
     if not isinstance(a, b):
         raise TypeError(f'{a} is not of type {b}')
+
 
 @builtin_function(inter, 'field', 2)
 def f_field(_: Interpret, a: int, b: Value) -> FieldObject[Value]:
     type_check(a, int)
     return FieldObject(a, b)
 
+
 @builtin_function(inter, 'set', 3)
 def f_set(_: Interpret, a: FieldObject[Value], b: int, c: Value) -> Value:
     a.field[b] = c
     return a
 
+
 @builtin_function(inter, 'get', 2)
-def f_set(_: Interpret, a: FieldObject[Value], b: int) -> Value:
+def f_get(_: Interpret, a: FieldObject[Value], b: int) -> Value:
     return a.field[b]
+
 
 @builtin_function(inter, 'show', 1)
 def f_show(_: Interpret, a: Value) -> str:
     return str(a)
+
 
 @builtin_function(inter, 'print', 1)
 def f_print(_: Interpret, a: Value) -> Value:
     print(str(a))
     return a
 
+
 @builtin_function(inter, 'iter', 1)
 def f_iter(_: Interpret, a: Value) -> Value:
     assert isinstance(a, AstSequenceObject)
     return AstSequenceObjectIterator(a)
 
+
 @builtin_function_staged(inter, '_next', 1)
 def f_next(inter: Interpret, stage: CurrentStage) \
-    -> Response[Value, Optional[Tuple[AstSequenceObjectIterator, int]]]:
+        -> Response[Value, Optional[Tuple[AstSequenceObjectIterator, int]]]:
 
     if stage.stage == 0:
         sequence = stage.args[0]
@@ -1712,36 +1797,39 @@ def f_next(inter: Interpret, stage: CurrentStage) \
 
 
 @builtin_operator(inter, grammar, '+', 2, 2, False)
-def op_plus(_: Interpret, a: Value, b: Value) -> int:
+def op_plus(_: Interpret, a: int, b: int) -> int:
+    type_check(a, int)
+    type_check(b, int)
     return a + b
 
 
 @builtin_operator(inter, grammar, '*', 3, 2, False)
-def op_mul(_: Interpret, a: Value, b: Value) -> int:
+def op_mul(_: Interpret, a: int, b: int) -> int:
     type_check(a, int)
     type_check(b, int)
     return a * b
 
 
 @builtin_operator(inter, grammar, '^', 3, 2, False)
-def op_mul(_: Interpret, a: Value, b: Value) -> int:
+def op_pow(_: Interpret, a: int, b: int) -> int:
     type_check(a, int)
     type_check(b, int)
     return a ** b
 
 
 @builtin_operator(inter, grammar, '/', 3, 2, False)
-def op_mul(_: Interpret, a: Value, b: Value) -> int:
+def op_div(_: Interpret, a: int, b: int) -> int:
     type_check(a, int)
     type_check(b, int)
     return a // b
 
 
 @builtin_operator(inter, grammar, '%', 3, 2, False)
-def op_mul(_: Interpret, a: Value, b: Value) -> int:
+def op_mod(_: Interpret, a: int, b: int) -> int:
     type_check(a, int)
     type_check(b, int)
     return a % b
+
 
 @builtin_operator(inter, grammar, '-', 3, 2, False)
 def op_minus(_: Interpret, a: Value, b: Value) -> int:
@@ -1754,17 +1842,20 @@ def op_minus(_: Interpret, a: Value, b: Value) -> int:
 def op_eq(_: Interpret, a: Value, b: Value) -> bool:
     return a == b
 
+
 def load_document(filename: str) -> Document:
     state = ParsingState(gen_of_file(filename), None, '\n')
     lex_state = ParsingState((lexer(state)), grammar)
     return parse_document(lex_state)
 
+
 def parse_args(args: List[str]) -> Any:
-    parser = ap.ArgumentParser();
+    parser = ap.ArgumentParser()
     parser.add_argument('source_files', nargs='+')
     parser.add_argument('-r', '--raw', action='store_const',
-                        const=True);
+                        const=True)
     return parser.parse_args(args)
+
 
 try:
 
@@ -1790,4 +1881,3 @@ try:
     print(res['main'])
 except (ParseError, PatternReject, InterError) as e:
     print(f'{e.__class__.__name__}: {str(e)}')
-

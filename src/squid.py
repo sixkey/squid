@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import (Generator, TypeVar, Tuple, Generic, Optional, Callable,
-                    Union, List, Any, Dict, Set, Iterable)
+                    Union, List, Any, Dict, Set, Iterable, Type, cast)
 from ppretty import ppretty
 import argparse as ap
 import sys
@@ -145,6 +145,8 @@ LEX_FUN, CHR_FUN = define_keyword('fun')
 LEX_OBJ, CHR_OBJ = define_keyword('obj')
 LEX_LET, CHR_LET = define_keyword('let')
 LEX_IN, CHR_IN = define_keyword('in')
+LEX_TRUE, CHR_TRUE = define_keyword('true')
+LEX_FALSE, CHR_FALSE = define_keyword('false')
 
 LEX_OPBINL, CHR_OPBINL = define_keyword('opbinl')
 LEX_OPBINR, CHR_OPBINR = define_keyword('opbinr')
@@ -609,8 +611,8 @@ class AstSequenceObjectIterator(RunningSequenceObject):
         if isinstance(lower, Dependency):
             dep = Dependency(1, lower.children, lower.stage)
             return dep
-        if isinstance(lower, AstSequenceObjectIterator):
-            self.active_child = lower
+        if isinstance(lower, AtomObject) and isinstance(lower.hidden[0], AstSequenceObjectIterator):
+            self.active_child = get_atom_value(lower, AstSequenceObjectIterator)
             return self.inter_step(inter, CurrentStage(0, [], None))
         else:
             self.pointer += 1
@@ -733,6 +735,8 @@ def atom_object(value: Value) -> Value:
         name = 'Sequence'
     elif isinstance(value, RunningSequenceObject):
         name = 'RunningSequence'
+    elif isinstance(value, FieldObject):
+        name = 'Field'
 
     if name is None:
         return value
@@ -839,8 +843,11 @@ class FunctionApplication(AstElement[Value]):
 
             fun_stage, fun_val, reminder, force, fun_data = stage.data
 
-            response = fun_val.apply(inter, CurrentStage(
-                fun_stage, reverse(stage.args), (force, fun_data)))
+            try:
+                response = fun_val.apply(inter, CurrentStage(
+                    fun_stage, reverse(stage.args), (force, fun_data)))
+            except (PatternNotMatched) as e:
+                raise self.inter_error(str(e), PatternNotMatched)
 
             if isinstance(response, Dependency):
                 return Dependency(
@@ -928,7 +935,8 @@ class FunctionOption(AstElement[FunctionObject]):
         assert names is not None
         remove = set(list_of_opt(self.producing))
         for pattern in self.formal_arguments:
-            remove.update(pattern_get_free_names(pattern))
+            pattern_names = pattern_get_free_names(pattern)
+            remove.update(pattern_names)
         names = names.difference(remove)
         return names
 
@@ -996,8 +1004,8 @@ class FunctionDefinition(AstElement[FunctionObject]):
 
                 if assignments is None:
                     raise self.inter_error(
-                        'None of the patterns matched'
-                        + '\n'.join(str(e) for e in errors))
+                        'None of the patterns matched: '
+                        + ''.join('\n  ' + str(e) for e in errors), PatternNotMatched)
 
                 for name, arg in assignments.items():
                     inter.sstack.put_on_last(name, arg)
@@ -1116,7 +1124,7 @@ class IfStmt(AstElement[Value]):
         if stage.stage == 0:
             return Dependency(1, [self.cond], None)
         if stage.stage == 1:
-            cond = stage.args[0]
+            cond = get_atom_value(stage.args[0], bool)
             return Dependency(2,
                               [self.branch_true
                                if cond
@@ -1410,7 +1418,8 @@ class CompPattern(AstElement):
         self.subpatterns = subpatterns
 
     def __str__(self) -> str:
-        return self.name + ''.join(' ' + str(p) for p in self.subpatterns)
+        return ('< ' + self.name
+                + ''.join(' ' + str(p) for p in self.subpatterns) + ' >')
 
 
 class PatternNotMatched(BaseException):
@@ -1422,7 +1431,7 @@ Pattern = Union[CompPattern, Identifier, Constant]
 
 def pattern_get_free_names(pattern: Pattern) -> Set[str]:
     if isinstance(pattern, Identifier):
-        return set(pattern.name)
+        return set([pattern.name])
     if isinstance(pattern, CompPattern):
         return set.union(
             set(), *(pattern_get_free_names(p) for p in pattern.subpatterns))
@@ -1433,13 +1442,20 @@ def pattern_get_free_names(pattern: Pattern) -> Set[str]:
 
 def pattern_match(pattern: Pattern, value: Value, res: Dict[str, Value]) \
         -> bool:
+
     if isinstance(pattern, Identifier):
         res[pattern.name] = value
         return True
+
     if isinstance(pattern, Constant):
-        if value != pattern.value:
-            raise pattern.inter_error(
-                f"object {value} is not a '{pattern}'", PatternNotMatched)
+        if isinstance(value, AtomObject):
+            if pattern.value != value.hidden[0]:
+                raise pattern.inter_error(
+                    f"object {value} is not a '{pattern}'", PatternNotMatched)
+        else:
+            if value != pattern.value:
+                raise pattern.inter_error(
+                    f"object {value} is not a '{pattern}'", PatternNotMatched)
         return True
 
     if not isinstance(value, ObjectObject):
@@ -1587,7 +1603,7 @@ def parse_obj_definition(state: ParsingState[Lexem, Grammar]) -> Constructor:
     return Constructor(location, name, args)
 
 
-LITERALS = [LEX_LIT_STR, LEX_LIT_DOUBLE, LEX_LIT_INT]
+LITERALS = [LEX_LIT_STR, LEX_LIT_DOUBLE, LEX_LIT_INT, LEX_TRUE, LEX_FALSE]
 
 
 def parse_literal(state: ParsingState[Lexem, Grammar]) -> Constant:
@@ -1598,6 +1614,10 @@ def parse_literal(state: ParsingState[Lexem, Grammar]) -> Constant:
         return Constant(token[2], float(token[1]))
     if (token[0] == LEX_LIT_INT):
         return Constant(token[2], int(token[1]))
+    if (token[0] == LEX_TRUE):
+        return Constant(token[2], True)
+    if (token[0] == LEX_FALSE):
+        return Constant(token[2], False)
     assert False
 
 
@@ -1827,23 +1847,29 @@ def type_check(a: Value, b) -> None:
     if not isinstance(a, b):
         raise TypeError(f'{a} is not of type {b}')
 
+def type_check_atom(a: Any, t: type) -> None:
+    assert isinstance(a, AtomObject)
+    type_check(a.hidden[0], t)
+
+def get_atom_value(a: Any, t: Type[T]) -> T:
+    assert isinstance(a, AtomObject)
+    value = a.hidden[0]
+    return cast(T, value)
 
 @builtin_function(inter, 'field', 2)
-def f_field(_: Interpret, a: int, b: Value) -> FieldObject[Value]:
-    type_check(a, int)
-    return FieldObject(a, b)
+def f_field(_: Interpret, a: AtomObject, b: Value) -> AtomObject:
+    return atom_object(FieldObject(get_atom_value(a, int), b))
 
 
 @builtin_function(inter, 'set', 3)
-def f_set(_: Interpret, a: FieldObject[Value], b: int, c: Value) -> Value:
-    a.field[b] = c
+def f_set(_: Interpret, a: AtomObject, b: AtomObject, c: Value) -> Value:
+    get_atom_value(a, FieldObject).field[get_atom_value(b, int)] = c
     return a
 
 
 @builtin_function(inter, 'get', 2)
 def f_get(_: Interpret, a: FieldObject[Value], b: int) -> Value:
-    return a.field[b]
-
+    return get_atom_value(a, FieldObject).field[get_atom_value(b, int)]
 
 @builtin_function(inter, 'print', 1)
 def f_print(_: Interpret, a: Value) -> Value:
@@ -1882,7 +1908,7 @@ def op_concat(_: Interpret, a: str, b: str) -> str:
     return a + b
 
 
-@builtin_atom_function(inter, '_show', 2)
+@builtin_atom_function(inter, '_show', 1)
 def op_show(_: Interpret, a: Any) -> str:
     if isinstance(a, str):
         return f'"{a}"'
@@ -1913,6 +1939,10 @@ def op_minus(_: Interpret, a: int, b: int) -> int:
 def op_eq(_: Interpret, a: Any, b: Any) -> bool:
     return a == b
 
+@builtin_atom_function(inter, '_lt', 2)
+def op_lt(_: Interpret, a: Any, b: Any) -> bool:
+    return a < b
+
 
 def load_document(filename: str) -> Document:
     state = ParsingState(gen_of_file(filename), None, '\n')
@@ -1924,6 +1954,10 @@ def parse_args(args: List[str]) -> Any:
     parser = ap.ArgumentParser()
     parser.add_argument('source_files', nargs='+')
     parser.add_argument('-r', '--raw', action='store_const',
+                        const=True)
+    parser.add_argument('-a', '--ast', action='store_const',
+                        const=True)
+    parser.add_argument('-o', '--operators', action='store_const',
                         const=True)
     return parser.parse_args(args)
 
@@ -1944,11 +1978,17 @@ try:
 
     doc += load_document('../sandbox/epilog.sq')
 
-    res = doc.interpret(inter)
+    if arguments.operators:
+        print('\n'.join(f'{i}: {o}' for i, o in enumerate(grammar.operator_table)))
 
-    if 'main' not in res:
-        raise InterError('main not found')
+    if arguments.ast:
+        print(doc)
+    else:
+        res = doc.interpret(inter)
 
-    print(res['main'])
-except (ParseError, PatternReject, InterError) as e:
+        if '_main' not in res:
+            raise InterError('_main not found')
+
+        print(res['_main'])
+except (ParseError, PatternReject, InterError, PatternNotMatched) as e:
     print(f'{e.__class__.__name__}: {str(e)}')

@@ -369,7 +369,7 @@ def str_of_location(location: Tuple[int, int]) -> str:
 class FutureBinding(Generic[T]):
 
     def __init__(self) -> None:
-        self.value: Optional[T]
+        self.value : Optional[T] = None
 
 
 Binding = Union[T, FutureBinding[T]]
@@ -476,6 +476,9 @@ Response = Union[T, Dependency[R]]
 class SequenceObject:
     pass
 
+class RunningSequenceObject:
+    pass
+
 
 class FieldObject(Generic[T]):
 
@@ -517,13 +520,19 @@ class FunctionObject:
     def apply(self, inter: Interpret, stage: CurrentStage[bool]) \
             -> Response[Value, None]:
         assert len(stage.args) <= self.argument_count
-        if stage.data:
+
+        force, fun_data = False, None
+
+        if stage.data is not None:
+            force, fun_data = stage.data
+
+        if force:
             return self.f(inter,
-                          CurrentStage(stage.stage, stage.args, None))
+                          CurrentStage(stage.stage, stage.args, fun_data))
         if len(stage.args) == self.argument_count:
             return self.f(inter,
                           CurrentStage(
-                              stage.stage, self.partial + stage.args, None))
+                              stage.stage, self.partial + stage.args, fun_data))
         return self.copy(*stage.args)
 
     def __repr__(self) -> str:
@@ -540,6 +549,17 @@ class ObjectObject:
         return self.name + ''.join(' ' + str(v) for v in self.values)
 
 
+class AtomObject(ObjectObject):
+
+    def __init__(self, name: str, values: List[Value]):
+        self.name = name
+        self.hidden = values
+        self.values = [self]
+
+    def __str__(self) -> str:
+        return self.name + ''.join(' ' + str(v) for v in self.hidden)
+
+
 class AstSequenceObject(SequenceObject):
 
     def __init__(self, elements: List[CaptureExpression]):
@@ -547,39 +567,61 @@ class AstSequenceObject(SequenceObject):
         self.pointer = 0
 
 
-class AstSequenceObjectIterator(SequenceObject):
+class AstSequenceObjectIterator(RunningSequenceObject):
 
     def __init__(self, sequence_object: AstSequenceObject):
         self.sequence_object = sequence_object
         self.pointer = 0
+        self.active_child = None
 
     def inter_step(self, inter: Interpret,
                    stage: CurrentStage[Optional[int]]) \
-            -> Response[Value, int]:
+            -> Response[Value, Optional[int]]:
+
         if stage.stage == 0:
             if self.pointer >= len(self.sequence_object.elements):
                 return Bottom
-            lower = self.sequence_object.elements[self.pointer].inter_step(
-                inter, CurrentStage(0, [], None))
+
+            if self.active_child is not None:
+                return Dependency(2, [self.active_child], None)
+            else:
+                lower = self.sequence_object.elements[self.pointer].inter_step(
+                    inter, CurrentStage(0, [], None))
 
         elif stage.stage == 1:
             assert (stage.data is not None)
             seq_stage = stage.data
             lower = self.sequence_object.elements[self.pointer].inter_step(
                 inter, CurrentStage(seq_stage, stage.args, None))
+
+        elif stage.stage == 2:
+            lower = stage.args[0]
+            if isinstance(lower, ObjectObject):
+                if (lower.name == 'Bottom'):
+                    self.pointer += 1
+                    self.active_child = None
+                    return self.inter_step(
+                        inter, CurrentStage(0, [], None))
+            return lower
         else:
             assert False
 
         if isinstance(lower, Dependency):
             dep = Dependency(1, lower.children, lower.stage)
             return dep
+        if isinstance(lower, AstSequenceObjectIterator):
+            self.active_child = lower
+            return self.inter_step(inter, CurrentStage(0, [], None))
         else:
             self.pointer += 1
             return lower
 
+    def __str__(self) -> str:
+        return f'Iterator {self.pointer} {self.sequence_object}'
+
 
 Value = Union[bool, int, float, str, FunctionObject, SequenceObject,
-              ObjectObject, AstSequenceObject, AstSequenceObjectIterator,
+              ObjectObject, SequenceObject, RunningSequenceObject,
               FieldObject]
 
 ###############################################################################
@@ -604,12 +646,6 @@ def ast_interpret(inter: Interpret, root: AstElement[Any]) -> Any:
         stage, arg_count, data, element = stack.pop()
         stage_pack = CurrentStage(stage, take(pile, arg_count), data)
         response = element.inter_step(inter, stage_pack)
-
-        # print("STEP")
-        # print(ppretty(element))
-        # print(ppretty(stage_pack))
-        # print(ppretty(data))
-        # print(ppretty(response))
 
         if isinstance(response, Dependency):
             stack.append(
@@ -682,6 +718,29 @@ class AstElement(Generic[T]):
         ...
 
 
+def atom_object(value: Value) -> Value:
+
+    name = None
+    if isinstance(value, bool):
+        name = 'Bool'
+    elif isinstance(value, int):
+        name = 'Int'
+    elif isinstance(value, str):
+        name = 'Str'
+    elif isinstance(value, float):
+        name = 'Double'
+    elif isinstance(value, SequenceObject):
+        name = 'Sequence'
+    elif isinstance(value, RunningSequenceObject):
+        name = 'RunningSequence'
+
+    if name is None:
+        return value
+
+    o = AtomObject(name, [value])
+    return o
+
+
 class Constant(AstElement[Value]):
 
     def __init__(self, location: Location, value: Value):
@@ -694,14 +753,14 @@ class Constant(AstElement[Value]):
         return f"{self.value}"
 
     def interpret(self, _: Interpret) -> Value:
-        return self.value
+        return atom_object(self.value)
 
     def get_free_names(self) -> Set[str]:
         return set()
 
     def inter_step(self, inter: Interpret, stage: CurrentStage[None]) \
             -> Response[Value, None]:
-        return self.value
+        return atom_object(self.value)
 
 
 class Identifier(AstElement[Value]):
@@ -771,28 +830,28 @@ class FunctionApplication(AstElement[Value]):
             argument_count = min(len(self.arguments), fun_val.argument_count)
             return Dependency(
                 2, reverse(self.arguments),
-                (0, fun_val, len(self.arguments), False),
+                (0, fun_val, len(self.arguments), False, None),
                 argument_count)
 
         if stage.stage == 2:
 
             assert (stage.data is not None)
 
-            fun_stage, fun_val, reminder, force = stage.data
+            fun_stage, fun_val, reminder, force, fun_data = stage.data
 
             response = fun_val.apply(inter, CurrentStage(
-                fun_stage, reverse(stage.args), force))
+                fun_stage, reverse(stage.args), (force, fun_data)))
 
             if isinstance(response, Dependency):
                 return Dependency(
                     2, response.children,
-                    (response.stage, fun_val, reminder, True))
+                    (response.stage, fun_val, reminder, True, response.data))
 
             if isinstance(response, FunctionObject) and reminder == 0:
                 argument_delta = min(reminder, response.argument_count)
                 return Dependency(
                     2, [],
-                    (0, response, argument_delta, False), argument_delta)
+                    (0, response, argument_delta, False, None), argument_delta)
 
             reminder = max(reminder - fun_val.argument_count, 0)
 
@@ -895,7 +954,7 @@ class FunctionDefinition(AstElement[FunctionObject]):
         return True
 
     def inter_step(self, inter: Interpret, stage: CurrentStage) \
-            -> Response[FunctionObject, None]:
+            -> Response[FunctionObject, Optional[FutureBinding[Value]]]:
 
         closure: Dict[str, Binding[Value]] = {}
 
@@ -911,8 +970,15 @@ class FunctionDefinition(AstElement[FunctionObject]):
             if stage.stage == 0:
 
                 inter.sstack.add_scope()
+
                 for name, value in closure.items():
                     inter.sstack.put_on_last_future(name, value)
+
+                res_binding = FutureBinding()
+
+                if self.producing is not None:
+                    inter.sstack.put_on_last_future(
+                        self.producing, res_binding)
 
                 inter.sstack.add_scope()
 
@@ -936,12 +1002,16 @@ class FunctionDefinition(AstElement[FunctionObject]):
                 for name, arg in assignments.items():
                     inter.sstack.put_on_last(name, arg)
 
-                return Dependency(1, [chosen_option.expr], None)
+                return Dependency(1, [chosen_option.expr], res_binding)
 
             if stage.stage == 1:
 
                 inter.sstack.pop_scope()
                 inter.sstack.pop_scope()
+
+                if stage.data is not None:
+                    res_binding = stage.data
+                    res_binding.value = stage.args[0]
 
                 return stage.args[0]
 
@@ -964,7 +1034,7 @@ class CaptureExpression:
         capture_names = self.expression.get_free_names()
         self.capture = {}
         for name in capture_names:
-            val = inter.sstack.lookup(name)
+            val = inter.sstack.lookup_future(name)
             if val is None:
                 raise expression.inter_error(
                     'symbol not found in outer context')
@@ -1002,8 +1072,8 @@ class SequenceDefinition(AstElement[SequenceObject]):
 
     def inter_step(self, inter: Interpret, stage: CurrentStage) \
             -> Response[SequenceObject, None]:
-        return AstSequenceObject(
-            [CaptureExpression(e, inter) for e in self.elements])
+        return atom_object(AstSequenceObject(
+            [CaptureExpression(e, inter) for e in self.elements]))
 
     def get_free_names(self):
         return set.union(
@@ -1583,14 +1653,14 @@ def match_operator(state: ParsingState[Lexem, Grammar],
 def parse_expression_level_unary(state: ParsingState[Lexem, Grammar],
                                  level: int) -> Expression:
 
-    _, _, prefix, posfix = state.data.operator_table[level - 1]
+    _, _, prefix, posfix = state.data.operator_table[level]
 
     prefix_stack = []
 
     while (op := match_operator(state, prefix)) is not None:
         prefix_stack.append(op)
 
-    body = parse_expression_level(state, level - 1)
+    body = parse_expression_level(state, level + 1)
 
     for prefix_operator in reversed(prefix_stack):
         body = FunctionApplication(prefix_operator, body)
@@ -1604,11 +1674,11 @@ def parse_expression_level_unary(state: ParsingState[Lexem, Grammar],
 def parse_expression_level(state: ParsingState[Lexem, Grammar],
                            level: int) -> Expression:
 
-    if level == 0:
+    if level == len(state.data.operator_table):
         atom = parse_application(state)
         return atom
 
-    associativity, infix, _, _ = state.data.operator_table[level - 1]
+    associativity, infix, _, _ = state.data.operator_table[level]
 
     elements = [parse_expression_level_unary(state, level)]
     operators = []
@@ -1651,7 +1721,7 @@ def parse_tuple(state: ParsingState[Lexem, Grammar]) -> Expression:
 
 def parse_expression_unit(state: ParsingState[Lexem, Grammar]) -> Expression:
 
-    root_level = len(state.data.operator_table)
+    root_level = 0
 
     operator_stack = []
 
@@ -1716,6 +1786,17 @@ def builtin_function(inter: Interpret, name: str, argument_count: int) \
         return fun
     return builtin_function_d
 
+def builtin_atom_function(inter: Interpret, name: str, argument_count: int):
+    def builtin_function_d(fun: Callable[..., Value]) -> Callable[..., Value]:
+        def fun_wrap(inter: Interpret, *atoms: AtomObject):
+            return atom_object(fun(inter, *(a.hidden[0] for a in atoms)))
+        define_builtin(
+            inter,
+            name,
+            FunctionObject(stage_function(fun_wrap), argument_count))
+        return fun_wrap
+    return builtin_function_d
+
 
 def builtin_operator(inter: Interpret, grammar: Grammar, name: str,
                      level: int, arity: int, associativity: bool) \
@@ -1764,20 +1845,15 @@ def f_get(_: Interpret, a: FieldObject[Value], b: int) -> Value:
     return a.field[b]
 
 
-@builtin_function(inter, 'show', 1)
-def f_show(_: Interpret, a: Value) -> str:
-    return str(a)
-
-
 @builtin_function(inter, 'print', 1)
 def f_print(_: Interpret, a: Value) -> Value:
     print(str(a))
     return a
 
 
-@builtin_function(inter, 'iter', 1)
-def f_iter(_: Interpret, a: Value) -> Value:
-    assert isinstance(a, AstSequenceObject)
+@builtin_atom_function(inter, '_iter', 1)
+def f_iter(_: Interpret, a: AstSequenceObject) -> Value:
+    type_check(a, AstSequenceObject)
     return AstSequenceObjectIterator(a)
 
 
@@ -1786,7 +1862,7 @@ def f_next(inter: Interpret, stage: CurrentStage) \
         -> Response[Value, Optional[Tuple[AstSequenceObjectIterator, int]]]:
 
     if stage.stage == 0:
-        sequence = stage.args[0]
+        sequence = stage.args[0].hidden[0]
         assert isinstance(sequence, AstSequenceObjectIterator)
         return Dependency(1, [sequence], None)
     elif stage.stage == 1:
@@ -1796,50 +1872,45 @@ def f_next(inter: Interpret, stage: CurrentStage) \
     assert False
 
 
-@builtin_operator(inter, grammar, '+', 2, 2, False)
+@builtin_atom_function(inter, '_add', 2)
 def op_plus(_: Interpret, a: int, b: int) -> int:
-    type_check(a, int)
-    type_check(b, int)
     return a + b
 
 
-@builtin_operator(inter, grammar, '*', 3, 2, False)
+@builtin_atom_function(inter, '_concat', 2)
+def op_concat(_: Interpret, a: str, b: str) -> str:
+    return a + b
+
+
+@builtin_atom_function(inter, '_show', 2)
+def op_show(_: Interpret, a: Any) -> str:
+    if isinstance(a, str):
+        return f'"{a}"'
+    return str(a)
+
+
+@builtin_atom_function(inter, '_mul', 2)
 def op_mul(_: Interpret, a: int, b: int) -> int:
-    type_check(a, int)
-    type_check(b, int)
     return a * b
 
 
-@builtin_operator(inter, grammar, '^', 3, 2, False)
-def op_pow(_: Interpret, a: int, b: int) -> int:
-    type_check(a, int)
-    type_check(b, int)
-    return a ** b
-
-
-@builtin_operator(inter, grammar, '/', 3, 2, False)
+@builtin_atom_function(inter, '_div', 2)
 def op_div(_: Interpret, a: int, b: int) -> int:
-    type_check(a, int)
-    type_check(b, int)
     return a // b
 
 
-@builtin_operator(inter, grammar, '%', 3, 2, False)
+@builtin_atom_function(inter, '_mod', 2)
 def op_mod(_: Interpret, a: int, b: int) -> int:
-    type_check(a, int)
-    type_check(b, int)
     return a % b
 
 
-@builtin_operator(inter, grammar, '-', 3, 2, False)
-def op_minus(_: Interpret, a: Value, b: Value) -> int:
-    type_check(a, int)
-    type_check(b, int)
+@builtin_atom_function(inter, '_sub', 2)
+def op_minus(_: Interpret, a: int, b: int) -> int:
     return a - b
 
 
-@builtin_operator(inter, grammar, '=', 1, 2, False)
-def op_eq(_: Interpret, a: Value, b: Value) -> bool:
+@builtin_atom_function(inter, '_eq', 2)
+def op_eq(_: Interpret, a: Any, b: Any) -> bool:
     return a == b
 
 

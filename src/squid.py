@@ -55,6 +55,14 @@ Gen = Generator[T, None, None]
 indent = 0
 
 
+def trace(a: T, msg: Optional[str] = None) -> T:
+    if msg:
+        print(f'{msg}:', a)
+    else:
+        print(a)
+
+    return a
+
 def loud(f: Callable[..., T]) -> Callable[..., T]:
     def wrapper(*args: Any, **kwargs: Any) -> T:
         global indent
@@ -158,6 +166,10 @@ LEX_LCEOP_CSTART, CHR_LCEOP_CSTART = define_keyword('-<')
 LEX_LCEOP_OEND, CHR_LCEOP_OEND = define_keyword('<<')
 LEX_LCEOP_CEND, CHR_LCEOP_CEND = define_keyword('>-')
 LEX_FUN_PATTERN, CHR_FUN_PATTERN = define_keyword('|-')
+
+LEX_INTEN_BIGSEP, CHR_INTEN_BIGSEP = define_keyword('|')
+LEX_INTEN_ASSIGN, CHR_INTEN_ASSIGN = define_keyword('<-')
+LEX_INTEN_SEP, CHR_INTEN_SEP = define_keyword(':')
 
 LEX_IF, CHR_IF = define_keyword('if')
 LEX_THEN, CHR_THEN = define_keyword('then')
@@ -298,6 +310,8 @@ class ParsingState(Generic[T, S]):
         self.row_counter = 0
         self.col_counter = 0
 
+        self.name_stack: List[str] = []
+
     def peek(self) -> Optional[T]:
         return self.value
 
@@ -371,7 +385,7 @@ def str_of_location(location: Tuple[int, int]) -> str:
 class FutureBinding(Generic[T]):
 
     def __init__(self) -> None:
-        self.value : Optional[T] = None
+        self.value: Optional[T] = None
 
 
 Binding = Union[T, FutureBinding[T]]
@@ -419,8 +433,8 @@ class ScopeStack(Generic[K, V]):
     def add_scope(self) -> None:
         self.stack.append({})
 
-    def pop_scope(self) -> None:
-        self.stack.pop()
+    def pop_scope(self) -> Dict[K, Binding[V]]:
+        return self.stack.pop()
 
     def copy(self, layers: Optional[int] = None) -> 'ScopeStack[K, V]':
         if layers is None:
@@ -431,21 +445,44 @@ class ScopeStack(Generic[K, V]):
         return self.lookup(key) is not None
 
     def __str__(self) -> str:
-        return '\n'.join(str(e) for e in self.stack)
+        return 'STACK\n' + '\n'.join('\tLAYER' + ''.join(f'\n\t\t{k}: {v}' for k, v in e.items()) for e in self.stack)
 
 
 ###############################################################################
 # Interpret state
 ###############################################################################
 
+class ScopeStacks(Generic[K, V]):
+
+    def __init__(self):
+        self.stacks = []
+
+    def add_stack(self, layers: Optional[int] = None):
+        if layers:
+            self.stacks.append(self.head().copy(layers))
+        else:
+            self.stacks.append(ScopeStack())
+
+    def pop_stack(self):
+        self.stacks.pop()
+
+    def head(self):
+        return self.stacks[-1]
+
 
 class Interpret:
 
     def __init__(self) -> None:
-        self.sstack: ScopeStack[str, Value] = ScopeStack()
+        self.sstacks: ScopeStacks[str, Value] = ScopeStacks()
+
+    def sstack(self) -> ScopeStack[str, Value]:
+        return self.sstacks.head()
 
 
 class InterError(BaseException):
+    pass
+
+class BultinError(BaseException):
     pass
 
 
@@ -478,6 +515,7 @@ Response = Union[T, Dependency[R]]
 class SequenceObject:
     pass
 
+
 class RunningSequenceObject:
     pass
 
@@ -488,7 +526,7 @@ class FieldObject(Generic[T]):
         self.field = [def_value] * size
 
     def __str__(self) -> str:
-        return 'Field {' + ', '.join(str(e) for e in self.field) + '}'
+        return '{' + ', '.join(str(e) for e in self.field) + '}'
 
 
 F = Callable[[Interpret, CurrentStage], Response[T, None]]
@@ -509,15 +547,16 @@ class TypeConstructor:
 class FunctionObject:
 
     def __init__(self, f: F[Response[Value, None]],
-                 argument_count: int, *partial: Value):
+                 argument_count: int, *partial: Value, info: Optional[str] = None):
         super().__init__()
         self.f = f
         self.argument_count = argument_count
         self.partial = list(partial)
+        self.info: Optional[str] = info
 
     def copy(self, *partial: Value) -> FunctionObject:
         return FunctionObject(
-            self.f, self.argument_count - len(partial), *partial)
+            self.f, self.argument_count - len(partial), *partial, info=self.info)
 
     def apply(self, inter: Interpret, stage: CurrentStage[bool]) \
             -> Response[Value, None]:
@@ -535,10 +574,11 @@ class FunctionObject:
             return self.f(inter,
                           CurrentStage(
                               stage.stage, self.partial + stage.args, fun_data))
-        return self.copy(*stage.args)
+
+        return atom_object(self.copy(*stage.args))
 
     def __repr__(self) -> str:
-        return f'FunctionObject {self.argument_count}'
+        return f'FunctionObject {self.argument_count}'# {self.info}'
 
 
 class ObjectObject:
@@ -548,7 +588,7 @@ class ObjectObject:
         self.values = values
 
     def __str__(self) -> str:
-        return self.name + ''.join(' ' + str(v) for v in self.values)
+        return self.name + ''.join(' (' + str(v) + ')' for v in self.values)
 
 
 class AtomObject(ObjectObject):
@@ -566,7 +606,12 @@ class AstSequenceObject(SequenceObject):
 
     def __init__(self, elements: List[CaptureExpression]):
         self.elements = elements
-        self.pointer = 0
+
+    def __len__(self):
+        return len(self.elements)
+
+    def __str__(self):
+        return '[ ' + ', '.join(str(e) for e in self.elements) + ' ]'
 
 
 class AstSequenceObjectIterator(RunningSequenceObject):
@@ -574,7 +619,11 @@ class AstSequenceObjectIterator(RunningSequenceObject):
     def __init__(self, sequence_object: AstSequenceObject):
         self.sequence_object = sequence_object
         self.pointer = 0
-        self.active_child = None
+        self.active_child: Optional[CaptureExpression] = None
+
+    def inherit(self, iterator: AstSequenceObjectIterator) -> None:
+        self.pointer = iterator.pointer
+        self.sequence_object = iterator.sequence_object
 
     def inter_step(self, inter: Interpret,
                    stage: CurrentStage[Optional[int]]) \
@@ -593,7 +642,8 @@ class AstSequenceObjectIterator(RunningSequenceObject):
         elif stage.stage == 1:
             assert (stage.data is not None)
             seq_stage = stage.data
-            lower = self.sequence_object.elements[self.pointer].inter_step(
+            current_object = self.sequence_object.elements[self.pointer]
+            lower = current_object.inter_step(
                 inter, CurrentStage(seq_stage, stage.args, None))
 
         elif stage.stage == 2:
@@ -604,6 +654,7 @@ class AstSequenceObjectIterator(RunningSequenceObject):
                     self.active_child = None
                     return self.inter_step(
                         inter, CurrentStage(0, [], None))
+            assert lower is not None
             return lower
         else:
             assert False
@@ -611,11 +662,16 @@ class AstSequenceObjectIterator(RunningSequenceObject):
         if isinstance(lower, Dependency):
             dep = Dependency(1, lower.children, lower.stage)
             return dep
-        if isinstance(lower, AtomObject) and isinstance(lower.hidden[0], AstSequenceObjectIterator):
-            self.active_child = get_atom_value(lower, AstSequenceObjectIterator)
+
+        if (sequence := safe_get_atom_value(lower, AstSequenceObjectIterator)) is not None:
+            self.active_child = self.sequence_object.elements[self.pointer].copy(sequence)
+            return self.inter_step(inter, CurrentStage(0, [], None))
+        if (sequence := safe_get_atom_value(lower, IntensionalSequenceIterator)) is not None:
+            self.active_child = self.sequence_object.elements[self.pointer].copy(sequence)
             return self.inter_step(inter, CurrentStage(0, [], None))
         else:
             self.pointer += 1
+            assert lower is not None
             return lower
 
     def __str__(self) -> str:
@@ -648,6 +704,12 @@ def ast_interpret(inter: Interpret, root: AstElement[Any]) -> Any:
         stage, arg_count, data, element = stack.pop()
         stage_pack = CurrentStage(stage, take(pile, arg_count), data)
         response = element.inter_step(inter, stage_pack)
+
+        # print("STATE")
+        # print(ppretty(element))
+        # print(ppretty(stage_pack))
+        # print(ppretty(data))
+        # print(ppretty(response))
 
         if isinstance(response, Dependency):
             stack.append(
@@ -720,7 +782,7 @@ class AstElement(Generic[T]):
         ...
 
 
-def atom_object(value: Value) -> Value:
+def atom_object(value: Value) -> AtomObject:
 
     name = None
     if isinstance(value, bool):
@@ -737,9 +799,10 @@ def atom_object(value: Value) -> Value:
         name = 'RunningSequence'
     elif isinstance(value, FieldObject):
         name = 'Field'
-
-    if name is None:
-        return value
+    elif isinstance(value, FunctionObject):
+        name = 'Fun'
+    else:
+        raise RuntimeError(f'atomic value is not defined for {value}')
 
     o = AtomObject(name, [value])
     return o
@@ -779,7 +842,7 @@ class Identifier(AstElement[Value]):
         return self.name
 
     def interpret(self, inter: Interpret) -> Value:
-        val = inter.sstack.lookup(self.name)
+        val = inter.sstack().lookup(self.name)
         if val is None:
             raise self.inter_error(f"'{self.name}' not defined")
         return val
@@ -789,8 +852,9 @@ class Identifier(AstElement[Value]):
 
     def inter_step(self, inter: Interpret, stage: CurrentStage[None]) \
             -> Response[Value, None]:
-        val = inter.sstack.lookup(self.name)
+        val = inter.sstack().lookup(self.name)
         if val is None:
+            print(inter.sstack())
             raise self.inter_error(f"'{self.name}' not defined")
         return val
 
@@ -821,22 +885,28 @@ class FunctionApplication(AstElement[Value]):
     def inter_step(self, inter: Interpret, stage: CurrentStage[Any]) \
             -> Response[Value, Any]:
 
+        # The application invokation
         if stage.stage == 0:
             return Dependency(1, [self.fun], None)
 
+        # The function is evaluated
         if stage.stage == 1:
-            fun_val = stage.args[0]
 
-            # TODO: this should be type error
-            if not isinstance(fun_val, FunctionObject):
-                raise self.inter_error(f'value {fun_val} is not a function')
+            fun_atom = stage.args[0]
+            if (not isinstance(fun_atom, AtomObject)
+                or not isinstance(fun_atom.hidden[0], FunctionObject)):
+                raise self.inter_error(f'{fun_atom} is not a function')
+            fun_val = get_atom_value(stage.args[0], FunctionObject)
 
             argument_count = min(len(self.arguments), fun_val.argument_count)
+            # Evaluate everything, pop only argument_count for the next
+            # evaluation
             return Dependency(
                 2, reverse(self.arguments),
-                (0, fun_val, len(self.arguments), False, None),
+                (0, fun_val, len(self.arguments) - argument_count, False, None),
                 argument_count)
 
+        # The function evaluation
         if stage.stage == 2:
 
             assert (stage.data is not None)
@@ -846,19 +916,24 @@ class FunctionApplication(AstElement[Value]):
             try:
                 response = fun_val.apply(inter, CurrentStage(
                     fun_stage, reverse(stage.args), (force, fun_data)))
-            except (PatternNotMatched) as e:
-                raise self.inter_error(str(e), PatternNotMatched)
+            except (PatternNotMatched, BultinError) as e:
+                raise self.inter_error(str(e), InterError)
 
+            # Function needs to evaluate something
             if isinstance(response, Dependency):
                 return Dependency(
                     2, response.children,
                     (response.stage, fun_val, reminder, True, response.data))
 
-            if isinstance(response, FunctionObject) and reminder == 0:
-                argument_delta = min(reminder, response.argument_count)
+            # Result is a function
+            if (isinstance(response, AtomObject)
+                    and isinstance(response.hidden[0], FunctionObject) and reminder != 0):
+                res_fun = get_atom_value(response, FunctionObject)
+                argument_delta = min(reminder, res_fun.argument_count)
                 return Dependency(
                     2, [],
-                    (0, response, argument_delta, False, None), argument_delta)
+                    (0, res_fun, reminder - argument_delta, False, None),
+                    argument_delta)
 
             reminder = max(reminder - fun_val.argument_count, 0)
 
@@ -962,12 +1037,12 @@ class FunctionDefinition(AstElement[FunctionObject]):
         return True
 
     def inter_step(self, inter: Interpret, stage: CurrentStage) \
-            -> Response[FunctionObject, Optional[FutureBinding[Value]]]:
+            -> Response[AtomObject, Optional[FutureBinding[Value]]]:
 
         closure: Dict[str, Binding[Value]] = {}
 
         for name in self.capture_names:
-            value = inter.sstack.lookup_future(name)
+            value = inter.sstack().lookup_future(name)
             if value is None:
                 raise self.inter_error(f"value '{name}' not defined")
             closure[name] = value
@@ -975,20 +1050,23 @@ class FunctionDefinition(AstElement[FunctionObject]):
         def f(inter: Interpret, stage: CurrentStage[None]) \
                 -> Response[Value, None]:
 
+            # Function is started
             if stage.stage == 0:
 
-                inter.sstack.add_scope()
+                inter.sstacks.add_stack(1)
 
+                # closure scope
+                inter.sstack().add_scope()
                 for name, value in closure.items():
-                    inter.sstack.put_on_last_future(name, value)
+                    inter.sstack().put_on_last_future(name, value)
+
+                # Scope for arguments
+                inter.sstack().add_scope()
 
                 res_binding = FutureBinding()
-
                 if self.producing is not None:
-                    inter.sstack.put_on_last_future(
+                    inter.sstack().put_on_last_future(
                         self.producing, res_binding)
-
-                inter.sstack.add_scope()
 
                 assignments = None
                 errors = []
@@ -1008,14 +1086,17 @@ class FunctionDefinition(AstElement[FunctionObject]):
                         + ''.join('\n  ' + str(e) for e in errors), PatternNotMatched)
 
                 for name, arg in assignments.items():
-                    inter.sstack.put_on_last(name, arg)
+                    inter.sstack().put_on_last(name, arg)
+
+                # scope for body
+                inter.sstack().add_scope()
 
                 return Dependency(1, [chosen_option.expr], res_binding)
 
             if stage.stage == 1:
 
-                inter.sstack.pop_scope()
-                inter.sstack.pop_scope()
+                # function over, pop its stack
+                inter.sstacks.pop_stack()
 
                 if stage.data is not None:
                     res_binding = stage.data
@@ -1025,7 +1106,7 @@ class FunctionDefinition(AstElement[FunctionObject]):
 
             assert False
 
-        return FunctionObject(f, self.arity)
+        return atom_object(FunctionObject(f, self.arity, info=str(self)))
 
     def get_free_names(self) -> Set[str]:
         return set.union(*(o.get_free_names() for o in self.options))
@@ -1037,34 +1118,46 @@ Unit = ObjectObject('Unit', [])
 
 class CaptureExpression:
 
-    def __init__(self, expression: Expression, inter: Interpret):
+    def __init__(self, expression: Expression, inter: Optional[Interpret] = None):
         self.expression = expression
-        capture_names = self.expression.get_free_names()
         self.capture = {}
-        for name in capture_names:
-            val = inter.sstack.lookup_future(name)
-            if val is None:
-                raise expression.inter_error(
-                    'symbol not found in outer context')
-            self.capture[name] = val
+
+        if inter is not None:
+            capture_names = self.expression.get_free_names()
+            for name in capture_names:
+                val = inter.sstack().lookup_future(name)
+                if val is None:
+                    raise expression.inter_error(
+                        'symbol not found in outer context')
+                self.capture[name] = val
+
+    def copy(self, expression: Expression) -> CaptureExpression:
+        capture = CaptureExpression(expression)
+        capture.capture = self.capture
+        return capture
 
     def inter_step(self, inter: Interpret, stage: CurrentStage) \
             -> Response[Value, None]:
 
         if stage.stage == 0:
-            inter.sstack.add_scope()
+            inter.sstack().add_scope()
             for name, value in self.capture.items():
-                inter.sstack.put_on_last_future(name, value)
-            inter.sstack.add_scope()
-            return Dependency(1, [self.expression], None)
+                inter.sstack().put_on_last(name, value)
+            inter.sstack().add_scope()
+            return Dependency(
+                1, [self.expression], None)
 
         if stage.stage == 1:
             res = stage.args[0]
-            inter.sstack.pop_scope()
-            inter.sstack.pop_scope()
+            assert res is not None
+            inter.sstack().pop_scope()
+            inter.sstack().pop_scope()
             return res
 
         assert False
+
+    def __str__(self) -> str:
+        return str(self.expression)
 
 
 class SequenceDefinition(AstElement[SequenceObject]):
@@ -1148,7 +1241,7 @@ class LetIn(AstElement[Value]):
 
     def __str__(self) -> str:
         return (f'{CHR_LET} {str(self.pattern)} {CHR_ASSIGN} '
-                + f'{str(self.expression)} {CHR_IN} {str(self.body)}')
+                + f'({str(self.expression)}) {CHR_IN} ({str(self.body)})')
 
     def inter_step(self, inter: Interpret, stage: CurrentStage[None]) \
             -> Response[Value]:
@@ -1157,23 +1250,24 @@ class LetIn(AstElement[Value]):
             return Dependency(1, [self.expression], None)
 
         if stage.stage == 1:
-
             assignments = {}
             pattern_match(self.pattern, stage.args[0], assignments)
-            inter.sstack.add_scope()
+            inter.sstack().add_scope()
             for key, value in assignments.items():
-                inter.sstack.put_on_last(key, value)
+                inter.sstack().put_on_last(key, value)
             return Dependency(2, [self.body], None)
 
         if stage.stage == 2:
-            inter.sstack.pop_scope()
+            inter.sstack().pop_scope()
             return stage.args[0]
 
         assert False
 
     def get_free_names(self) -> Set[str]:
-        return (self.expression.get_free_names()
-                - self.pattern.get_free_names())
+        expression_names = self.expression.get_free_names()
+        pattern_names = pattern_get_free_names(self.pattern)
+        return expression_names - pattern_names
+
 
 
 Atom = Union[FunctionApplication,
@@ -1188,6 +1282,162 @@ Atom = Union[FunctionApplication,
 
 Expression = Atom
 
+class IntensionalAssignment:
+
+    def __init__(self, pattern: Pattern, expression: Expression):
+        self.pattern = pattern
+        self.expression = expression
+
+    def __str__(self):
+        return str(self.pattern) + f' {CHR_INTEN_ASSIGN} ' + str(self.expression)
+
+class IntensionalSequence(AstElement[AstSequenceObject]):
+
+    def __init__(self, main: Expression, parts: List[Union[Expression, IntensionalAssignment]]):
+        super().__init__(main.location)
+        self.main = main
+        self.parts = parts
+
+    def __len__(self):
+        return len(self.parts)
+
+    def __str__(self):
+        return ('*[ '  + str(self.main) + f' {CHR_INTEN_BIGSEP} '
+                + CHR_INTEN_SEP.join(str(e) for e in self.parts) + ' ]')
+
+    def get_free_names(self) -> Set[str]:
+
+        pos = set()
+        neg = set()
+
+        for part in self.parts:
+            if isinstance(part, IntensionalAssignment):
+                pos.update(part.expression.get_free_names())
+                neg.update(part.pattern.get_free_names())
+            else:
+                pos.update(part.get_free_names())
+
+        return pos - neg;
+
+    def inter_step(self, inter: Interpret,
+                   stage: CurrentStage[None]) \
+            -> Response[Value, None]:
+        return atom_object(IntensionalSequenceIterator(self))
+
+class IntensionalSequenceIterator(RunningSequenceObject):
+
+    def __init__(self, inten_seq: IntensionalSequence):
+        self.inten_seq = inten_seq
+
+        self.pointer: int = 0
+
+        self.values: Dict[str, Value] = {}
+        self.generator_stack: List[Tuple[int, RunningSequenceObject]] = []
+        self.cur_top_generator: Optional[Tuple[int, RunningSequenceObject]] = None
+
+    def inter_step(self, inter: Interpret,
+                   stage: CurrentStage[Optional[Pattern]]) \
+            -> Response[Value, Optional[Pattern]]:
+
+        # Add scope
+        if stage.stage == 0:
+            inter.sstack().add_scope()
+            for key, value in self.values.items():
+                inter.sstack().put_on_last(key, value)
+
+        # First entry - pick what to do
+        if stage.stage == 0 or stage.stage == 1:
+            # There is nothing more to do
+
+            if self.pointer == -1:
+                return Dependency(5, [], None)
+
+            if self.pointer >= len(self.inten_seq):
+                return Dependency(4, [self.inten_seq.main], None)
+
+            current = self.inten_seq.parts[self.pointer]
+
+            if isinstance(current, IntensionalAssignment):
+                if (self.cur_top_generator is not None
+                        and self.pointer == self.cur_top_generator[0]):
+                    # Currently running sequence
+                    return Dependency(2, [self.cur_top_generator[1]], current.pattern)
+                # Sequence that needs to be started
+                return Dependency(2, [current.expression], current.pattern)
+            # Normal value
+            return Dependency(3, [current], None)
+
+        # We need to eval a intensional assignment
+        elif stage.stage == 2 or stage.stage == 6:
+            value = stage.args[0]
+
+            if (sequence := safe_get_atom_value(value, RunningSequenceObject)) is not None:
+                # We see the generator for the first time, meaning
+                # we need to return
+                if stage.stage == 2:
+                    self.generator_stack.append((self.pointer, sequence))
+                return Dependency(6, [sequence], stage.data)
+
+            if isinstance(value, ObjectObject) and value.name == 'Bottom':
+                self.generator_stack.pop()
+                if len(self.generator_stack) == 0:
+                    return Dependency(5, [], None)
+                else:
+                    self.cur_top_generator = self.generator_stack[-1]
+                    self.pointer = self.cur_top_generator[0]
+            else:
+                pattern = stage.data
+                assert pattern is not None
+                assignments = {}
+
+                pattern_match(pattern, value, assignments)
+
+                self.values.update(assignments)
+
+                for key, value in assignments.items():
+                    inter.sstack().put_on_last(key, value)
+
+                self.pointer += 1;
+
+            return Dependency(1, [], None)
+
+        # We need to evaluate a predicate
+        elif stage.stage  == 3:
+            value = get_atom_value(stage.args[0], bool)
+
+            if value:
+                self.pointer += 1
+            elif len(self.generator_stack) == 0:
+                return Dependency(5, [], None)
+            else:
+                self.cur_top_generator = self.generator_stack[-1]
+                self.pointer = self.cur_top_generator[0]
+
+            return Dependency(1, [], None)
+
+        # Final evaluation
+        elif stage.stage == 4:
+            value = stage.args[0]
+            inter.sstack().pop_scope()
+            assert value is not None
+
+            if len(self.generator_stack) != 0:
+                self.cur_top_generator = self.generator_stack[-1]
+                self.pointer = self.cur_top_generator[0]
+            else:
+                self.pointer = -1
+
+            return value
+
+        elif stage.stage == 5:
+            inter.sstack().pop_scope()
+            return Bottom
+
+        assert False
+
+    def get_free_names(self) -> Set[str]:
+        return self.inten_seq.get_free_names()
+
 
 class Assignment(AstElement[Tuple[str, Value]]):
 
@@ -1201,10 +1451,10 @@ class Assignment(AstElement[Tuple[str, Value]]):
 
     def interpret(self, inter: Interpret) -> Tuple[str, Value]:
         binding: FutureBinding[Value] = FutureBinding()
-        inter.sstack.put_on_last_future(self.name, binding)
+        inter.sstack().put_on_last_future(self.name, binding)
         value = ast_interpret(inter, self.expr)
         binding.value = value
-        inter.sstack.put_on_last(self.name, value)
+        inter.sstack().put_on_last(self.name, value)
         return self.name, value
 
     def get_free_names(self) -> Set[str]:
@@ -1221,7 +1471,7 @@ class Document(AstElement[Dict[str, Value]]):
     def __str__(self) -> str:
         return '\n'.join(str(a) for a in self.assignments)
 
-    def add_definition(self, assignment: Assignment) -> None:
+    def add_definition(self, assignment: Assignment, name_stack: List[str]) -> None:
         name = assignment.name
         location = assignment.location
 
@@ -1230,16 +1480,16 @@ class Document(AstElement[Dict[str, Value]]):
             if (isinstance(old_value.expr, FunctionDefinition)
                     and isinstance(assignment.expr, FunctionDefinition)):
                 if not old_value.expr.inflate(assignment.expr):
-                    raise parsing_error(location, "the arities don't match")
+                    raise parsing_error(location, "the arities don't match", name_stack)
             else:
-                raise parsing_error(location, f'redefinition of {name}')
+                raise parsing_error(location, f'redefinition of {name}', name_stack)
         else:
             self.names[name] = assignment
             self.assignments.append(assignment)
 
     def __iadd__(self, other: Document) -> Document:
         for assignment in other.assignments:
-            self.add_definition(assignment)
+            self.add_definition(assignment, ['document_merging'])
         return self
 
     def interpret(self, inter: Interpret) -> Dict[str, Value]:
@@ -1273,22 +1523,22 @@ def token_is_next(state: ParsingState[Lexem, Any], *lex_id: int) -> bool:
     return True
 
 
-def perror_msg(location: Tuple[int, int], message: str) -> str:
-    return f'{str_of_location(location)} - {message}'
+def perror_msg(location: Tuple[int, int], message: str, name_stack: List[str]) -> str:
+    return f'{str_of_location(location)} - {message} in \n' + '\n'.join(name_stack[-5:])
 
 
-def perror_lex_msg(lex: Lexem, message: str) -> str:
-    return perror_msg(lex[2], message)
+def perror_lex_msg(lex: Lexem, message: str, name_stack: List[str]) -> str:
+    return perror_msg(lex[2], message, name_stack)
 
 
-def perror_expected(lex: Lexem, *expected: str) -> str:
+def perror_expected(lex: Lexem, name_stack: List[str], *expected: str) -> str:
     return perror_lex_msg(lex,
                           "expected " + ', '.join(f"{e}" for e in expected)
-                          + f" but got '{lex[1]}'")
+                          + f" but got '{lex[1]}'", name_stack)
 
 
-def parsing_error(location: Tuple[int, int], message: str) -> ParseError:
-    return ParseError(perror_msg(location, message))
+def parsing_error(location: Tuple[int, int], message: str, name_stack: List[str]) -> ParseError:
+    return ParseError(perror_msg(location, message, name_stack))
 
 
 def req_token(state: ParsingState[Lexem, Any], *lex_id: int) -> Lexem:
@@ -1298,7 +1548,7 @@ def req_token(state: ParsingState[Lexem, Any], *lex_id: int) -> Lexem:
 
     if head[0] not in lex_id:
         raise ParseError(
-            perror_expected(head, *(str_of_lexid(i) for i in lex_id)))
+            perror_expected(head, state.name_stack, *(str_of_lexid(i) for i in lex_id)))
     return head
 
 
@@ -1310,7 +1560,7 @@ def req_wholetoken(state: ParsingState[Lexem, Any], *lexes: Tuple[int, str]) \
     if (head[0], head[1]) not in lexes:
         raise ParseError(
             perror_expected(
-                head,
+                head, state.name_stack,
                 *(f'{str_of_lexid(lex[0])} {lex[1]}' for lex in lexes)))
     return head
 
@@ -1326,6 +1576,20 @@ def cur_location(state: ParsingState[Lexem, Grammar]) -> Location:
     return state.rpeek()[2]
 
 
+def parse_named(fun: Callable[[ParsingState[T, S]], R]) \
+        -> Callable[[ParsingState[T, S]], R]:
+    def wrapper(state: ParsingState[T, S]) -> R:
+        # print('append:', fun.__name__)
+        state.name_stack.append(fun.__name__)
+        res = fun(state)
+        # print('pop:', fun.__name__, 'with: ', str(res))
+        state.name_stack.pop()
+        return res
+    wrapper.__name__ = fun.__name__
+    return wrapper
+
+
+@parse_named
 def parse_document(state: ParsingState[Lexem, Grammar]) -> Document:
 
     location = cur_location(state)
@@ -1337,7 +1601,7 @@ def parse_document(state: ParsingState[Lexem, Grammar]) -> Document:
         else:
             assignment = parse_assignment(state)
 
-        document.add_definition(assignment)
+        document.add_definition(assignment, state.name_stack)
 
         req_token(state, LEX_SEMICOLON)
 
@@ -1346,6 +1610,7 @@ def parse_document(state: ParsingState[Lexem, Grammar]) -> Document:
     return document
 
 
+@parse_named
 def parse_operator_definition(state: ParsingState[Lexem, Grammar]) \
         -> Assignment:
     location = cur_location(state)
@@ -1358,7 +1623,7 @@ def parse_operator_definition(state: ParsingState[Lexem, Grammar]) \
 
     if level_int < 0 or level_int >= state.data.operator_levels:
         raise parsing_error(
-            location, f'operator level out of bounds {level_int}')
+            location, f'operator level out of bounds {level_int}', state.name_stack)
 
     state.data.add_operator(
         operator[1], level_int, 2, op_def[0] == LEX_OPBINR)
@@ -1366,6 +1631,7 @@ def parse_operator_definition(state: ParsingState[Lexem, Grammar]) \
     return Assignment(location, operator[1], function)
 
 
+@parse_named
 def parse_assignment(state: ParsingState[Lexem, Grammar]) -> Assignment:
     location = cur_location(state)
     name = req_token(state, LEX_IDENTIFIER)
@@ -1374,6 +1640,7 @@ def parse_assignment(state: ParsingState[Lexem, Grammar]) -> Assignment:
     return Assignment(location, name[1], expr)
 
 
+@parse_named
 def parse_letin(state: ParsingState[Lexem, Grammar]) -> LetIn:
     location = cur_location(state)
     req_token(state, LEX_LET)
@@ -1386,6 +1653,7 @@ def parse_letin(state: ParsingState[Lexem, Grammar]) -> LetIn:
     return LetIn(location, pattern, expression, body)
 
 
+@parse_named
 def parse_arguments(state: ParsingState[Lexem, Grammar]) -> List[Atom]:
     arguments: List[Expression] = []
     while True:
@@ -1396,6 +1664,7 @@ def parse_arguments(state: ParsingState[Lexem, Grammar]) -> List[Atom]:
     return arguments
 
 
+@parse_named
 def parse_application(state: ParsingState[Lexem, Grammar]) -> Atom:
     fun = parse_atom(state)
     arguments = parse_arguments(state)
@@ -1404,6 +1673,7 @@ def parse_application(state: ParsingState[Lexem, Grammar]) -> Atom:
     return FunctionApplication(fun, *arguments)
 
 
+@parse_named
 def parse_identifier(state: ParsingState[Lexem, Grammar]) -> Identifier:
     token = req_token(state, LEX_IDENTIFIER)
     return Identifier(token[2], token[1])
@@ -1420,6 +1690,9 @@ class CompPattern(AstElement):
     def __str__(self) -> str:
         return ('< ' + self.name
                 + ''.join(' ' + str(p) for p in self.subpatterns) + ' >')
+
+    def get_free_names(self) -> Set[str]:
+        assert False
 
 
 class PatternNotMatched(BaseException):
@@ -1474,6 +1747,7 @@ def pattern_match(pattern: Pattern, value: Value, res: Dict[str, Value]) \
     return True
 
 
+@parse_named
 def parse_pattern_atom(state: ParsingState[Lexem, Any]) -> Pattern:
     location = cur_location(state)
     if match_token(state, LEX_LPARE):
@@ -1502,6 +1776,7 @@ def parse_pattern_atom(state: ParsingState[Lexem, Any]) -> Pattern:
         f'token {str_of_lexid(peek_token(state))} is not a match')
 
 
+@parse_named
 def parse_pattern(state: ParsingState[Lexem, Any]) -> Pattern:
 
     location = cur_location(state)
@@ -1516,6 +1791,7 @@ def parse_pattern(state: ParsingState[Lexem, Any]) -> Pattern:
     return CompPattern(location, 'Tuple', units)
 
 
+@parse_named
 def parse_function_definition(state: ParsingState[Lexem, Grammar]) \
         -> FunctionDefinition:
 
@@ -1542,7 +1818,7 @@ def parse_function_definition(state: ParsingState[Lexem, Grammar]) \
             arity = len(arguments)
         elif arity != len(arguments):
             raise parsing_error(
-                location, 'different options have different arrities')
+                location, 'different options have different arrities', state.name_stack)
 
         producing = None
         if match_token(state, LEX_PROD):
@@ -1561,6 +1837,14 @@ def parse_function_definition(state: ParsingState[Lexem, Grammar]) \
     return FunctionDefinition(location, options, arity, producing=producing)
 
 
+@parse_named
+def parse_inten_assignment(state: ParsingState[Lexem, Grammar]) -> IntensionalAssignment:
+    pattern = parse_pattern(state)
+    req_token(state, LEX_INTEN_ASSIGN)
+    expression = parse_expression(state)
+    return IntensionalAssignment(pattern, expression)
+
+@parse_named
 def parse_sequence(state: ParsingState[Lexem, Grammar]) -> Expression:
 
     location = cur_location(state)
@@ -1570,7 +1854,27 @@ def parse_sequence(state: ParsingState[Lexem, Grammar]) -> Expression:
     elements = []
 
     while match_token(state, LEX_RBRACK) is None:
-        elements.append(parse_expression(state))
+
+        expr = parse_expression(state)
+
+        if match_token(state, LEX_INTEN_BIGSEP) is not None:
+
+            inten_elements = []
+
+            while not token_is_next(state, LEX_SEMICOLON, LEX_RBRACK):
+
+                if match_token(state, LEX_LET) is not None:
+                    inten_elements.append(parse_inten_assignment(state))
+                else:
+                    inten_elements.append(parse_expression(state))
+
+                if match_token(state, LEX_INTEN_SEP) is None:
+                    break
+
+            elements.append(IntensionalSequence(expr, inten_elements))
+        else:
+            elements.append(expr)
+
         if (match_token(state, LEX_SEMICOLON) is None):
             break
 
@@ -1579,6 +1883,7 @@ def parse_sequence(state: ParsingState[Lexem, Grammar]) -> Expression:
     return SequenceDefinition(location, elements)
 
 
+@parse_named
 def parse_if_stmt(state: ParsingState[Lexem, Grammar]) -> IfStmt:
 
     location = cur_location(state)
@@ -1592,6 +1897,7 @@ def parse_if_stmt(state: ParsingState[Lexem, Grammar]) -> IfStmt:
     return IfStmt(location, cond, branch_true, branch_false)
 
 
+@parse_named
 def parse_obj_definition(state: ParsingState[Lexem, Grammar]) -> Constructor:
 
     location = cur_location(state)
@@ -1606,6 +1912,7 @@ def parse_obj_definition(state: ParsingState[Lexem, Grammar]) -> Constructor:
 LITERALS = [LEX_LIT_STR, LEX_LIT_DOUBLE, LEX_LIT_INT, LEX_TRUE, LEX_FALSE]
 
 
+@parse_named
 def parse_literal(state: ParsingState[Lexem, Grammar]) -> Constant:
     token = req_token(state, *LITERALS)
     if (token[0] == LEX_LIT_STR):
@@ -1621,6 +1928,7 @@ def parse_literal(state: ParsingState[Lexem, Grammar]) -> Constant:
     assert False
 
 
+@parse_named
 def parse_atom(state: ParsingState[Lexem, Grammar]) -> Expression:
 
     token = state.peek()
@@ -1646,7 +1954,7 @@ def parse_atom(state: ParsingState[Lexem, Grammar]) -> Expression:
     if (token[0] == LEX_OBJ):
         return parse_obj_definition(state)
 
-    raise PatternReject(perror_expected(token, 'expression element'))
+    raise PatternReject(perror_expected(token, state.name_stack, 'expression element'))
 
 
 def match_operator(state: ParsingState[Lexem, Grammar],
@@ -1667,7 +1975,7 @@ def match_operator(state: ParsingState[Lexem, Grammar],
     if lex[1] not in state.data.operators:
         raise ParseError(
             perror_lex_msg(lex,
-                           f'operator {lex[1]} not defined'))
+                           f'operator {lex[1]} not defined', state.name_stack))
 
 
 def parse_expression_level_unary(state: ParsingState[Lexem, Grammar],
@@ -1721,10 +2029,12 @@ def parse_expression_level(state: ParsingState[Lexem, Grammar],
     return res
 
 
+@parse_named
 def parse_expression(state: ParsingState[Lexem, Grammar]) -> Expression:
     return parse_tuple(state)
 
 
+@parse_named
 def parse_tuple(state: ParsingState[Lexem, Grammar]) -> Expression:
 
     location = cur_location(state)
@@ -1739,6 +2049,7 @@ def parse_tuple(state: ParsingState[Lexem, Grammar]) -> Expression:
     return Constructor(location, 'Tuple', units)
 
 
+@parse_named
 def parse_expression_unit(state: ParsingState[Lexem, Grammar]) -> Expression:
 
     root_level = 0
@@ -1775,7 +2086,7 @@ def parse_expression_unit(state: ParsingState[Lexem, Grammar]) -> Expression:
 
 
 def define_builtin(inter: Interpret, name: str, val: Value) -> None:
-    inter.sstack.put(name, val)
+    inter.sstack().put(name, atom_object(val))
 
 
 def stage_function(fun: Callable[..., Value]) -> F[Value]:
@@ -1805,6 +2116,7 @@ def builtin_function(inter: Interpret, name: str, argument_count: int) \
             FunctionObject(stage_function(fun), argument_count))
         return fun
     return builtin_function_d
+
 
 def builtin_atom_function(inter: Interpret, name: str, argument_count: int):
     def builtin_function_d(fun: Callable[..., Value]) -> Callable[..., Value]:
@@ -1840,36 +2152,57 @@ def builtin_operator(inter: Interpret, grammar: Grammar, name: str,
 grammar = Grammar(10)
 
 inter = Interpret()
-inter.sstack.add_scope()
+inter.sstacks.add_stack()
+inter.sstack().add_scope()
 
 
 def type_check(a: Value, b) -> None:
     if not isinstance(a, b):
         raise TypeError(f'{a} is not of type {b}')
 
+
 def type_check_atom(a: Any, t: type) -> None:
     assert isinstance(a, AtomObject)
     type_check(a.hidden[0], t)
+
+
+def safe_get_atom_value(a: Any, t: Type[T]) -> Optional[T]:
+    if not isinstance(a, AtomObject):
+        return None
+    value = a.hidden[0]
+    if not isinstance(value, t):
+        return None
+    return cast(t, value)
 
 def get_atom_value(a: Any, t: Type[T]) -> T:
     assert isinstance(a, AtomObject)
     value = a.hidden[0]
     return cast(T, value)
 
-@builtin_function(inter, 'field', 2)
+
+@builtin_function(inter, '_field', 2)
 def f_field(_: Interpret, a: AtomObject, b: Value) -> AtomObject:
     return atom_object(FieldObject(get_atom_value(a, int), b))
 
 
-@builtin_function(inter, 'set', 3)
+@builtin_function(inter, '_set', 3)
 def f_set(_: Interpret, a: AtomObject, b: AtomObject, c: Value) -> Value:
-    get_atom_value(a, FieldObject).field[get_atom_value(b, int)] = c
+    field_object = get_atom_value(a, FieldObject)
+    index = get_atom_value(b, int)
+    if index >= len(field_object.field):
+        raise BultinError(f'field index {index} out of bounds {field_object}')
+    field_object.field[index] = c
     return a
 
 
-@builtin_function(inter, 'get', 2)
-def f_get(_: Interpret, a: FieldObject[Value], b: int) -> Value:
-    return get_atom_value(a, FieldObject).field[get_atom_value(b, int)]
+@builtin_function(inter, '_get', 2)
+def f_get(inter: Interpret, a: FieldObject[Value], b: int) -> Value:
+    field_object = get_atom_value(a, FieldObject)
+    index = get_atom_value(b, int)
+    if index >= len(field_object.field):
+        raise BultinError(f'field index {index} out of bounds {field_object}')
+    return field_object.field[index]
+
 
 @builtin_function(inter, 'print', 1)
 def f_print(_: Interpret, a: Value) -> Value:
@@ -1888,11 +2221,11 @@ def f_next(inter: Interpret, stage: CurrentStage) \
         -> Response[Value, Optional[Tuple[AstSequenceObjectIterator, int]]]:
 
     if stage.stage == 0:
-        sequence = stage.args[0].hidden[0]
-        assert isinstance(sequence, AstSequenceObjectIterator)
+        sequence = get_atom_value(stage.args[0], AstSequenceObjectIterator)
         return Dependency(1, [sequence], None)
     elif stage.stage == 1:
         res = stage.args[0]
+        assert res is not None
         return res
 
     assert False
@@ -1908,7 +2241,7 @@ def op_concat(_: Interpret, a: str, b: str) -> str:
     return a + b
 
 
-@builtin_atom_function(inter, '_show', 1)
+@builtin_function(inter, '_show', 1)
 def op_show(_: Interpret, a: Any) -> str:
     if isinstance(a, str):
         return f'"{a}"'
@@ -1938,6 +2271,7 @@ def op_minus(_: Interpret, a: int, b: int) -> int:
 @builtin_atom_function(inter, '_eq', 2)
 def op_eq(_: Interpret, a: Any, b: Any) -> bool:
     return a == b
+
 
 @builtin_atom_function(inter, '_lt', 2)
 def op_lt(_: Interpret, a: Any, b: Any) -> bool:
@@ -1979,7 +2313,8 @@ try:
     doc += load_document('../sandbox/epilog.sq')
 
     if arguments.operators:
-        print('\n'.join(f'{i}: {o}' for i, o in enumerate(grammar.operator_table)))
+        print('\n'.join(f'{i}: {o}' for i,
+                        o in enumerate(grammar.operator_table)))
 
     if arguments.ast:
         print(doc)

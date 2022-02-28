@@ -1,0 +1,18 @@
+show := fun a -> _show a;
+
+_print_running := fun s -> 
+    let x := _next s in 
+    let snd := fun a b -> b in
+    let g := fun 
+        |- < Bottom > -> obj Unit 
+        |- x -> snd (print x) (_print_running s) in 
+    g x;
+
+_main_resolve := fun 
+    |- < RunningSequence s > -> _print_running s
+    |- a -> show a;
+
+_main_show := let res := main in _main_resolve res;
+_main_basic := main;
+
+_main := _main_show; 

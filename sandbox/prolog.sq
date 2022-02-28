@@ -1,0 +1,268 @@
+id := fun x -> x;
+flip := fun f a b -> f b a;
+not := fun true -> false |- false -> true;
+
+opbinl . 2 ( fun f g x -> f ( g ( x ) ) );
+opbinr $ 2 ( fun f x -> f x );
+opbinl >>> 1 ( fun a b -> b ); 
+opbinr <<< 1 ( fun a b -> a );
+
+unit := obj Unit;
+
+
+or := fun 
+    |- < Bool false > < Bool false > -> false
+    |- _ _ -> true;
+
+opbinl || 4 or;
+
+and := fun 
+    |- < Bool true > < Bool true > -> true
+    |- _ _ -> false;
+opbinl && 4 and;
+
+add := fun 
+    < Int a > < Int b > -> _add a b; 
+opbinl + 6 add;
+
+sub := fun 
+    < Int a > < Int b > -> _sub a b;
+opbinl - 6 sub; 
+
+mul := fun 
+    < Int a > < Int b > -> _mul a b; 
+opbinl * 7 mul; 
+
+div := fun 
+    < Int a > < Int b > -> _div a b; 
+opbinl / 7 div;
+
+mod := fun 
+    < Int a > < Int b > -> _mod a b; 
+opbinl % 7 mod;
+
+eq := fun 
+    a b -> _eq a b; 
+opbinl = 5 eq;
+
+opbinl != 5 (fun a b -> not $ a = b);
+
+lt := fun 
+     < Int a > < Int b > -> _lt a b; 
+opbinl < 5 lt;
+
+gt := flip lt; 
+opbinl > 5 gt; 
+
+le := fun 
+    < Int a > < Int b > -> a < b || a = b;
+opbinl <= 5 le; 
+
+ge := fun 
+    < Int a > < Int b > -> a > b || a = b;
+opbinl >= 5 ge; 
+
+concat := fun 
+    < Str a > < Str b > -> _concat a b;
+opbinl ++ 6 concat;
+
+iter := fun 
+    < Sequence s > -> _iter s;
+
+next := fun 
+    < RunningSequence r > -> _next r;
+
+field := fun < Int s > e -> _field s e; 
+
+get := fun < Field f > < Int i > -> _get f i; 
+set := fun < Field f > < Int i > v -> _set f i v;
+
+fget := fun < Field f > -> get f 0;
+fset := fun < Field f > e -> set f 0 e;
+
+neg := fun x -> ( 0 - 1 ) * x;
+
+Bottom := obj Bottom;
+
+undefined := obj Undefined;
+
+curry := fun f -> fun a b -> f (a, b);
+uncurry := fun f -> fun a, b -> f a b;
+
+
+Pair := fun a b -> obj Tuple a b;
+Triplet := fun a b c -> obj Tuple a b c;
+FourSthIdk := fun a b c d -> obj Tuple a b c d;
+
+fst := fun < Tuple a b > -> a; 
+snd := fun < Tuple a b > -> b;
+
+first := fun f < Tuple a b > -> Pair ( f a ) b;
+second := fun f < Tuple a b > -> Pair a ( f b );
+
+opbinr <$ 1 first; 
+opbinr $> 1 second;
+
+Just := fun a -> obj Just a; 
+Nothing := obj Nothing;
+
+fmap := fun 
+    |- f < Just a > -> Just (f a)
+    |- f < Nothing > -> Nothing;
+
+Cons := fun a b -> obj Cons a b; 
+
+iter := fun 
+    |- < Cons a b > -> iter [ a ; iter b ] 
+    |- Nothing -> iter [ Bottom ]; 
+
+show := fun 
+    |- < Cons a b > -> "Cons " ++ show a ++ " " ++ show b
+    |- < Nothing > -> "Nothing";
+
+length := fun 
+    |- < Cons a b > -> 1 + length b
+    |- < Nothing > -> 0; 
+
+concat := fun 
+    |- < Nothing > l -> l
+    |- l < Nothing > -> l
+    |- < Cons a b > c -> Cons a $ concat b c;
+
+fold := fun 
+    |- f c < Cons a b > -> 
+        let d := f a c 
+        in fold f d b 
+    |- f c < Nothing > -> c;
+
+sum := fun l -> fold ( fun a b -> a + b ) 0 l;
+
+prod := fun l -> fold ( fun a b -> a * b ) 1 l;
+
+fmap := fun f < Cons a b > -> Cons (f a) (fmap f b);
+
+opbinr <$> 1 fmap;
+
+safe_head := fun 
+    |- < Cons a b > -> Just a 
+    |- < Nothing > -> Nothing;
+
+safe_tail := fun 
+    |- < Cons a b > -> Just b 
+    |- < Nothing > -> Nothing;
+
+Writer := fun a b -> obj Writer a b;
+
+writer_return := fun a 
+    -> Writer a "";
+
+fmap := fun 
+    |- f < Writer a b > -> Writer (f a) b;
+
+join := fun 
+    |- < Writer < Writer a b > c > -> Writer a (b + c);
+
+opbinl >>= 1 (fun a f -> 
+    join $ fmap f a);
+
+opbinr >==> 1 (fun f g a -> 
+    f a >>= g);
+
+Reader := fun a -> obj Reader a;
+
+fmap := fun f < Reader a > -> Reader ( f . a );
+
+PartCached := fun l s 
+    -> obj PartCached l ( field l Bottom ) ( iter s );
+
+rshift := fun 
+    |- f 0 -> f 
+    |- f n -> rshift ( set f n ( get f ( n - 1 ) ) ) ( n - 1 ); 
+
+next := fun 
+    |- < PartCached l f s > -> 
+        let x := next s in 
+        set ( rshift f ( l - 1 ) ) 0 x >>> x;
+
+idx := fun 
+    |- < PartCached l f s > i -> 
+        get f ( ( 0 - 1 ) * i - 1);
+
+opbinl ! 9 idx;
+
+forini := fun f s -> let x := next s in 
+                     let g := 
+                        fun 
+                            |- < Bottom > -> Nothing 
+                            |- x -> Cons ( f x ) ( forini f s ) in 
+                     g x;
+
+foruini := fun f s -> let x := next s in 
+                     let g := 
+                        fun 
+                            |- < Bottom > -> unit 
+                            |- x -> f x >>> foruini f s in 
+                     g x;
+
+forin := fun f < Sequence s > -> forini f ( iter s );
+foruin := fun f s -> foruini f ( iter s );
+
+form := fun a b f m 
+    -> if a = b 
+        then m 
+        else form ( a + 1 ) b f ( m >>= f a );
+
+for := fun a b f 
+    -> if a = b 
+        then unit 
+        else f a >>> for ( a + 1 ) b f;
+
+range := fun 
+    |- pred update < Int start > < Int step > < Int end > -> 
+        if pred start end
+            then [ start ; iter $ range pred update ( update start step ) step end ]
+            else [ Bottom ];
+
+repeat := fun s => r -> [ iter s ; iter r ]; 
+
+fib := fun a b => f -> PartCached 2 $ 
+    [ a ; b ; iter $ repeat [ f ! ( neg 1 ) + f ! ( neg 2 ) ] ];
+
+take := fun 
+    |- 0 s -> [ Bottom ] 
+    |- n s -> [ next s ; iter $ take ( n - 1 ) $ s ];
+
+take_while := fun p s ->
+    let n_value := next s 
+    in if p n_value then [ n_value ; iter $ take_while p s ] else [ Bottom ];
+
+seq := fun 
+    |- < Int a > < Int b > -> 
+        if a < b 
+            then range lt add a 1 b
+            else range gt sub a 1 b
+    |- < Tuple < Int a > < Int b > > < Int e > -> 
+        range ( if a < b then lt else gt ) add a ( b - a ) e 
+    |- < Tuple < Int a > < Int b > < Int c > > < Int e > -> 
+        if c - b = b - a then 
+            range ( if a < b then lt else gt ) add a ( b - a ) e 
+        else if c / b = b / a then 
+            range lt mul a ( b / a ) e
+        else 
+            undefined
+    |- < Tuple < Int a > < Int b > < Int c > < Int d > > < Int end > -> 
+        if a + b = c && b + c = d 
+            then take_while (fun a -> a < end) $ fib a b 
+            else undefined;
+
+take := fun 
+    |- 0 s -> [ Bottom ] 
+    |- n s -> [ next s ; iter $ take ( n - 1 ) $ s ];
+
+print_iter := fun s -> foruin print s;
+print_running := fun s -> foruini print s;
+print_list := print_iter . iter;
+
+opbinl ... 3 seq;
+
+list_of_iter := fun s -> forin id s;

@@ -1,0 +1,10 @@
+
+fib := fun n => f -> Cached 2 $ 
+    [ 0 ; 1 ; iter $ repeat [ f ! ( neg 1 ) + f ! ( neg 2 ) ] ];
+
+iter_of_list := fun 
+    |- < Cons a b > -> [ a ; iter $ iter_of_list $ b ] 
+    |- Nothing -> [ Bottom ]; 
+
+
+main := print_iter $ take 10 $ fib 3;

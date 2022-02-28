@@ -3,4 +3,5 @@
 !*.py
 !src 
 !src/*.py
-!sandbox/prelude.sq
+!sandbox
+!sandbox/*.sq

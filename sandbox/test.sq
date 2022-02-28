@@ -1,0 +1,94 @@
+DynamicArray := fun c e -> 
+    obj DynamicArray ( field 1 0 ) ( field 1 c ) e ( field 1 ( field c e ) );
+
+_dynarray_push := fun a e -> 
+    let < DynamicArray s c _ f > := a in 
+    let i := fget s in 
+    set ( fget f ) i e >>> fset s ( i + 1 ) >>> a;
+
+fcopy := fun < Field f > < Field g > < Int fs > < Int fe > < Int gs > -> 
+    for 0 ( fe - fs ) 
+        ( fun i -> set g ( gs + i ) ( get f ( fs + i ) ) );
+
+_dynarray_grow := fun a -> 
+    let < DynamicArray s c e f > := a in
+    let old_field := fget f in 
+    let new_capacity := if fget c = 0 then 1 else fget c * 2 in 
+    let new_field := field new_capacity e in 
+    fset c new_capacity >>>
+    fset f new_field >>> 
+    fcopy old_field new_field 0 ( fget s ) 0 >>> a;
+
+dynarray_push := fun a e -> 
+    let < DynamicArray s c _ f > := a in 
+    _dynarray_push ( if fget s >= fget c - 1 then _dynarray_grow a else a ) e;
+
+dynarray_pop := fun a -> 
+    let < DynamicArray s c _ f > := a in 
+    if fget s = 0 then 
+        Nothing 
+    else 
+        let value := get ( fget f ) ( fget s - 1 ) in 
+        fset s ( fget s - 1 ) >>> Just value;
+
+dynarray_size := fun < DynamicArray s _ _ _ > -> fget s;
+idx := fun 
+    < DynamicArray s _ _ f > i -> 
+        if i >= 0 then 
+            get ( fget f ) i
+        else 
+            get ( fget f ) ( fget s + i );
+
+
+Cached := fun s -> obj Cached ( DynamicArray 0 Bottom ) ( iter s );
+
+next := fun 
+    < Cached a s > -> 
+        let v := next s in 
+        dynarray_push a v >>> v;
+
+idx := fun 
+    < Cached a s > i -> a ! i;
+
+fib_cached := fun a b => f -> Cached $ 
+    [ a ; b ; iter $ repeat [ f ! ( neg 1 ) + f ! ( neg 2 ) ] ];
+
+GrowingSet := fun < Sequence s > -> obj GrowingSet ( DynamicArray 0 Bottom ) ( iter s );
+
+GrowingSetIterator := fun 
+    g < Int m > -> obj GrowingSetIterator g ( field 1 0 ) m; 
+
+next := fun 
+    < GrowingSetIterator g fi m > -> 
+    let < GrowingSet a s > := g in 
+    let i := fget fi in 
+    fset fi ( i + 1 ) >>>
+    let f := fun < Bottom > -> Bottom |- v -> if v < m then v else Bottom in
+    f ( if i >= dynarray_size a 
+             then next g 
+             else a ! i );
+
+next := fun 
+    < GrowingSet a s > -> 
+        let v := next s in 
+        dynarray_push a v >>> v; 
+
+idx := fun 
+    g i -> make_running $ GrowingSetIterator g i;
+
+nats := fun s -> iter [ s; nats ( s + 1 ) ];
+
+seq_fold := fun f i s -> 
+    let fa := field 1 i in 
+    foruin ( fun e -> fset fa ( f ( fget fa ) e ) ) s >>> fget fa;
+
+all := seq_fold and true;
+
+make_running := fun s -> 
+    let g := fun < Bottom > -> iter [ Bottom ] |- a -> iter [ a ; make_running s ] in
+    let v := next s in g v;
+
+primes := fun _ => ps -> GrowingSet $ 
+[ 2; 3; n | let n <- nats 4 : all [ n % p != 0 | let p <- ps!( n / 2 + 1 ) ] ];
+
+main := print_running ( primes unit ! 100 ); 
